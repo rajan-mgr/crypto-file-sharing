@@ -104,7 +104,7 @@ class SecureShareSystem:
             file_hash = hashlib.sha256(plaintext).hexdigest()
             hash_bytes = file_hash.encode()
 
-            file_id = f"file_{datetime.datetime.now().timestamp()}_{hashlib.md5(plaintext).hexdigest()[:8]}"
+            file_id = f"file_{datetime.datetime.now().timestamp()}_{hashlib.md5(file_data, usedforsecurity=False).hexdigest()[:8]}"  # nosec B324
             enc_path = self.data_dir / "files" / f"{file_id}.enc"
             with open(enc_path, "wb") as f:
                 f.write(encrypted_data)
