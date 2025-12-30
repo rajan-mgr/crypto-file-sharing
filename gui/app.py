@@ -23,6 +23,7 @@ class SecureShareApp:
 
         self.show_login_screen()
 
+    # ==================== STYLES ====================
     def setup_styles(self):
         style = ttk.Style()
         style.theme_use('clam')
@@ -36,12 +37,14 @@ class SecureShareApp:
             widget.destroy()
 
     # ==================== LOGIN / REGISTER ====================
-
     def show_login_screen(self):
         self.clear_screen()
 
         ttk.Label(self.main_container, text="🔐 SecureShare", style='Title.TLabel').pack(pady=(0, 10))
-        ttk.Label(self.main_container, text="Secure File Sharing with Hybrid Encryption & Digital Signatures").pack(pady=(0, 30))
+        ttk.Label(
+            self.main_container,
+            text="Secure File Sharing with Hybrid Encryption & Digital Signatures"
+        ).pack(pady=(0, 30))
 
         # Login Frame
         login_frame = ttk.LabelFrame(self.main_container, text=" Login ", padding=20)
@@ -114,7 +117,6 @@ class SecureShareApp:
             messagebox.showerror("Error", "Username already exists")
 
     # ==================== MAIN DASHBOARD ====================
-
     def show_main_dashboard(self):
         self.clear_screen()
 
@@ -133,8 +135,7 @@ class SecureShareApp:
         self.create_users_tab(notebook)
         self.create_certificate_tab(notebook)
 
-    # ==================== TABS ====================
-
+    # ==================== SHARE FILE TAB ====================
     def create_share_tab(self, notebook):
         tab = ttk.Frame(notebook)
         notebook.add(tab, text="📤 Share File")
@@ -183,7 +184,10 @@ class SecureShareApp:
             return
 
         if self.system.share_file(filepath, recipients, self.current_password):
-            messagebox.showinfo("Success", f"File '{Path(filepath).name}' shared successfully with:\n{', '.join(recipients)}")
+            messagebox.showinfo(
+                "Success",
+                f"File '{Path(filepath).name}' shared successfully with:\n{', '.join(recipients)}"
+            )
             self.share_path_var.set("")
             for var in self.recip_vars.values():
                 var.set(False)
@@ -191,6 +195,7 @@ class SecureShareApp:
         else:
             messagebox.showerror("Error", "Failed to share file. Check console for details.")
 
+    # ==================== FILES TAB ====================
     def create_files_tab(self, notebook):
         tab = ttk.Frame(notebook)
         notebook.add(tab, text="📁 My Files")
@@ -229,14 +234,10 @@ class SecureShareApp:
 
         files = self.system.get_shared_files()
         for sf in files:
-            # Exclude owner from recipients list
             recipients = [u for u in sf.encrypted_sym_key.keys() if u != sf.owner]
-            if not recipients:
-                recip_str = "(Only me)"
-            else:
-                recip_str = ", ".join(recipients[:4])
-                if len(recipients) > 4:
-                    recip_str += "..."
+            recip_str = "(Only me)" if not recipients else ", ".join(recipients[:4])
+            if len(recipients) > 4:
+                recip_str += "..."
 
             self.files_tree.insert("", tk.END, iid=sf.file_id, values=(
                 sf.file_id[:15] + "...",
@@ -254,23 +255,28 @@ class SecureShareApp:
         file_id = selection[0]
         sf = self.system.shared_files[file_id]
 
-        # Fixed: No defaultextension, no forced .txt
         save_path = filedialog.asksaveasfilename(
             title="Save decrypted file as",
-            initialfile=sf.filename  # Preserves original filename + extension (or none)
+            initialfile=sf.filename
         )
         if not save_path:
             return
 
         if self.system.download_file(file_id, save_path, self.current_password):
-            messagebox.showinfo("Success", f"File '{sf.filename}' downloaded and decrypted successfully!\n\n"
-                                          "✓ Integrity verified\n"
-                                          "✓ Digital signature verified")
+            messagebox.showinfo(
+                "Success",
+                f"File '{sf.filename}' downloaded and decrypted successfully!\n\n"
+                "✓ Integrity verified\n"
+                "✓ Digital signature verified"
+            )
         else:
-            messagebox.showerror("Error", "Download failed.\nPossible causes:\n"
-                                          "• Access was revoked\n"
-                                          "• File is corrupted\n"
-                                          "• Internal error (check console)")
+            messagebox.showerror(
+                "Error",
+                "Download failed.\nPossible causes:\n"
+                "• Access was revoked\n"
+                "• File is corrupted\n"
+                "• Internal error (check console)"
+            )
 
     def revoke_access(self):
         selection = self.files_tree.selection()
@@ -290,7 +296,11 @@ class SecureShareApp:
         dialog.transient(self.root)
         dialog.grab_set()
 
-        ttk.Label(dialog, text=f"Revoke access to '{sf.filename}' from:", font=('Arial', 11, 'bold')).pack(pady=15)
+        ttk.Label(
+            dialog,
+            text=f"Revoke access to '{sf.filename}' from:",
+            font=('Arial', 11, 'bold')
+        ).pack(pady=15)
 
         revoke_vars = {}
         for user in sf.encrypted_sym_key:
@@ -303,9 +313,9 @@ class SecureShareApp:
         def perform_revoke():
             revoked = []
             for user, var in revoke_vars.items():
-                if var.get():
-                    if self.system.revoke_file_access(file_id, user):
-                        revoked.append(user)
+                if var.get() and self.system.revoke_file_access(file_id, user):
+                    revoked.append(user)
+
             if revoked:
                 messagebox.showinfo("Success", f"Access revoked for: {', '.join(revoked)}")
             else:
@@ -315,6 +325,7 @@ class SecureShareApp:
 
         ttk.Button(dialog, text="Revoke Selected", command=perform_revoke).pack(pady=20)
 
+    # ==================== USERS TAB ====================
     def create_users_tab(self, notebook):
         tab = ttk.Frame(notebook)
         notebook.add(tab, text="👥 Users")
@@ -322,7 +333,6 @@ class SecureShareApp:
         frame = ttk.LabelFrame(tab, text="Registered Users", padding=20)
         frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
 
-        # Fixed: Treeview for better alignment and read-only behavior
         columns = ("Status", "Username")
         tree = ttk.Treeview(frame, columns=columns, show="headings", height=15)
         tree.heading("Status", text="")
@@ -335,13 +345,11 @@ class SecureShareApp:
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Insert sorted users
         for user in sorted(self.system.get_all_users()):
-            if user == self.system.current_user:
-                tree.insert("", tk.END, values=("✓ You", user))
-            else:
-                tree.insert("", tk.END, values=("•", user))
+            status = "✓ You" if user == self.system.current_user else "•"
+            tree.insert("", tk.END, values=(status, user))
 
+    # ==================== CERTIFICATE TAB ====================
     def create_certificate_tab(self, notebook):
         tab = ttk.Frame(notebook)
         notebook.add(tab, text="📜 Your Certificate")
@@ -349,30 +357,26 @@ class SecureShareApp:
         user = self.system.users[self.system.current_user]
         cert = user.certificate
 
-        info = f"""
-        ┌{'─' * 70}┐
-        │                    YOUR DIGITAL CERTIFICATE                     │
-        ├{'─' * 70}┤
-        │ Subject:        {cert.subject.ljust(48)} │
-        │ Serial:         {cert.serial.ljust(48)} │
-        │ Issuer:         {cert.issuer.ljust(48)} │
-        │ Valid From:     {cert.valid_from[:10].ljust(48)} │
-        │ Valid To:       {cert.valid_to[:10].ljust(48)} │
-        │ Status:         ✅ VALID (Demo Self-Signed)                     │
-        └{'─' * 70}┘
-
-        Public Key (first 120 characters):
-        {cert.public_key_pem[:120]}...
-
-        Signature (first 80 characters of base64):
-        {base64.b64encode(cert.signature).decode()[:80]}...
-        """
+        info = (
+            f"┌{'─' * 70}┐\n"
+            f"│                    YOUR DIGITAL CERTIFICATE                     │\n"
+            f"├{'─' * 70}┤\n"
+            f"│ Subject:        {cert.subject.ljust(48)} │\n"
+            f"│ Serial:         {cert.serial.ljust(48)} │\n"
+            f"│ Issuer:         {cert.issuer.ljust(48)} │\n"
+            f"│ Valid From:     {cert.valid_from[:10].ljust(48)} │\n"
+            f"│ Valid To:       {cert.valid_to[:10].ljust(48)} │\n"
+            f"│ Status:         ✅ VALID (Demo Self-Signed)                     │\n"
+            f"└{'─' * 70}┘\n"
+            f"\nPublic Key (first 120 chars):\n{cert.public_key_pem[:120]}...\n"
+            f"\nSignature (first 80 chars of base64):\n"
+            f"{base64.b64encode(cert.signature).decode()[:80]}..."
+        )
 
         label = ttk.Label(tab, text=info, font=('Courier', 10), background="#f0f0f0", relief="groove", padding=30)
         label.pack(padx=40, pady=40, fill=tk.X)
 
     # ==================== LOGOUT ====================
-
     def logout(self):
         self.system.current_user = None
         self.current_password = None
