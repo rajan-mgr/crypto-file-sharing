@@ -1,15 +1,17 @@
-import os
+# core/secure_share.py
+
 import json
-import hashlib
 import datetime
 import base64
 from pathlib import Path
 from dataclasses import asdict
 
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.fernet import Fernet
+import hashlib
+import os
 
 from .models import User, Certificate, SharedFile
 from .utils import (
@@ -31,7 +33,7 @@ class SecureShareSystem:
 
         self.users: dict[str, User] = {}
         self.shared_files: dict[str, SharedFile] = {}
-        self.revoked_certs: set[str] = set()  # Not used yet, but ready for future CRL
+        self.revoked_certs: set[str] = set()
         self.current_user: str | None = None
 
         self._load_data()
@@ -50,7 +52,7 @@ class SecureShareSystem:
             valid_from=datetime.datetime.now().isoformat(),
             valid_to=(datetime.datetime.now() + datetime.timedelta(days=365)).isoformat(),
             public_key_pem=public_pem.decode("utf-8"),
-            signature=b""  # Self-signed placeholder (empty for demo)
+            signature=b""
         )
 
         user = User(
@@ -75,7 +77,6 @@ class SecureShareSystem:
         if user.password_hash != expected_hash:
             return False
 
-        # Test decryption to confirm password is correct
         try:
             decrypt_private_key(user.private_key_encrypted, password, user.salt)
             self.current_user = username
@@ -84,7 +85,6 @@ class SecureShareSystem:
             return False
 
     def get_private_key(self, password: str):
-        """Decrypt and load the current user's private key"""
         user = self.users[self.current_user]
         private_pem = decrypt_private_key(user.private_key_encrypted, password, user.salt)
         return serialization.load_pem_private_key(private_pem, password=None)
@@ -104,16 +104,15 @@ class SecureShareSystem:
             file_hash = hashlib.sha256(plaintext).hexdigest()
             hash_bytes = file_hash.encode()
 
-            file_id = f"file_{datetime.datetime.now().timestamp()}_{hashlib.md5(file_data, usedforsecurity=False).hexdigest()[:8]}"  # nosec B324
+            # MD5 used only for short non-cryptographic identifier - safe here # nosec B324
+            file_id = f"file_{datetime.datetime.now().timestamp()}_{hashlib.md5(plaintext, usedforsecurity=False).hexdigest()[:8]}"
             enc_path = self.data_dir / "files" / f"{file_id}.enc"
             with open(enc_path, "wb") as f:
                 f.write(encrypted_data)
 
-            # Sign the file hash
             private_key = self.get_private_key(password)
             signature = sign_data(hash_bytes, private_key)
 
-            # Encrypt symmetric key for owner + each recipient
             encrypted_keys = {}
             owner_pub_pem = self.users[self.current_user].certificate.public_key_pem.encode()
             encrypted_keys[self.current_user] = encrypt_sym_key_with_public(sym_key, owner_pub_pem)
@@ -171,11 +170,9 @@ class SecureShareSystem:
             cipher = Fernet(sym_key)
             decrypted = cipher.decrypt(enc_data)
 
-            # Verify integrity
             if hashlib.sha256(decrypted).hexdigest() != sf.file_hash:
                 return False
 
-            # Verify digital signature
             owner_pub_pem = self.users[sf.owner].certificate.public_key_pem.encode()
             if not verify_signature(sf.file_hash.encode(), sf.signature, owner_pub_pem):
                 return False
@@ -205,10 +202,7 @@ class SecureShareSystem:
     def get_all_users(self):
         return list(self.users.keys())
 
-    # ====================== PERSISTENCE ======================
-
     def _save_data(self):
-        # Save users
         users_data = {}
         for u in self.users.values():
             cert_dict = asdict(u.certificate)
@@ -226,7 +220,6 @@ class SecureShareSystem:
         with open(self.data_dir / "users.json", "w") as f:
             json.dump(users_data, f, indent=2)
 
-        # Save shared files
         files_data = {}
         for fid, sf in self.shared_files.items():
             data = asdict(sf)
@@ -245,7 +238,6 @@ class SecureShareSystem:
             with open(users_file) as f:
                 data = json.load(f)
 
-            # Automatic migration: old field "public_key" → "public_key_pem"
             migrated = False
             for ud in data.values():
                 cert_data = ud.get("certificate")
@@ -256,7 +248,6 @@ class SecureShareSystem:
                 with open(users_file, "w") as f:
                     json.dump(data, f, indent=2)
 
-            # Load users
             for ud in data.values():
                 cert_data = ud["certificate"]
                 signature_b64 = cert_data.get("signature", "")
@@ -274,7 +265,6 @@ class SecureShareSystem:
                 )
                 self.users[user.username] = user
 
-        # Load shared files
         files_file = self.data_dir / "shared_files.json"
         if files_file.exists():
             with open(files_file) as f:
@@ -287,3 +277,6 @@ class SecureShareSystem:
                 fd["signature"] = base64.b64decode(fd["signature"])
                 sf = SharedFile(**fd)
                 self.shared_files[fid] = sf
+
+
+# Ensure newline at end of file
