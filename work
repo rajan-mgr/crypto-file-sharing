@@ -1,9 +1,0 @@
-# Step 1: Allow Docker containers to access your X server
-xhost +local:docker
-
-# Step 2: Run the container with display forwarding and optional data folder
-sudo docker run -it --rm \
-  -e DISPLAY=$DISPLAY \
-  -v /tmp/.X11-unix:/tmp/.X11-unix \
-  -v $(pwd)/data:/securefile-app/data \
-  securefile
