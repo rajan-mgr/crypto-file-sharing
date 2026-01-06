@@ -1,24 +1,25 @@
-# core/database.py
+import os
 import psycopg2
 from psycopg2.extras import DictCursor
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 class DatabaseManager:
-    def __init__(self, host, dbname, user, password):
-        # Using the credentials provided for your Ubuntu server
+    def __init__(self, host=None, dbname=None, user=None, password=None):
+        # Prioritize .env variables, fallback to arguments or hardcoded defaults
         self.conn_params = {
-            "host": "100.112.140.126",
-            "database": "mysecurefileshare",
-            "user": "postgres",
-            "password": "post",
-            "port": 5432
+            "host": os.getenv("DB_HOST", host ),
+            "database": os.getenv("DB_NAME", dbname),
+            "user": os.getenv("DB_USER", user),
+            "password": os.getenv("DB_PASS", password),
+            "port": os.getenv("DB_PORT")
         }
 
     def get_conn(self):
+        """Creates a fresh connection to the PostgreSQL database."""
         return psycopg2.connect(**self.conn_params)
-
-    def init_db(self):
-        """Optional helper to ensure tables are ready (usually run once)."""
-        pass
 
     # --- User Methods ---
     def save_user(self, username, pwd_hash, salt, priv_key_enc, pub_key_pem):
@@ -46,13 +47,13 @@ class DatabaseManager:
     def save_file(self, file_id, filename, owner, file_data, signature, file_hash, permissions):
         with self.get_conn() as conn:
             with conn.cursor() as cur:
-                # 1. Save main file data
+                # 1. Save main encrypted file data
                 cur.execute("""
                     INSERT INTO shared_files (file_id, filename, owner, file_data, signature, file_hash)
                     VALUES (%s, %s, %s, %s, %s, %s)
                 """, (file_id, filename, owner, file_data, signature, file_hash))
                 
-                # 2. Save recipient permissions (encrypted sym keys)
+                # 2. Save recipient permissions (RSA-encrypted symmetric keys)
                 for recipient, enc_sym_key in permissions.items():
                     cur.execute("""
                         INSERT INTO file_permissions (file_id, recipient, encrypted_sym_key)
@@ -63,7 +64,7 @@ class DatabaseManager:
     def get_user_files(self, username):
         with self.get_conn() as conn:
             with conn.cursor(cursor_factory=DictCursor) as cur:
-                # Get files where user is owner OR has permission
+                # Retrieve files where user is the owner OR has been granted permission
                 cur.execute("""
                     SELECT f.file_id, f.filename, f.owner, f.signature, f.file_hash, f.timestamp
                     FROM shared_files f
@@ -88,13 +89,13 @@ class DatabaseManager:
     # --- Management & Deletion ---
 
     def delete_file(self, file_id, owner):
-        """Removes the file and all associated permissions from the database."""
+        """Permanently removes file and all associated access rights."""
         try:
             with self.get_conn() as conn:
                 with conn.cursor() as cur:
-                    # Delete permissions first to satisfy Foreign Key constraints
+                    # Clear permissions first (Foreign Key constraint)
                     cur.execute("DELETE FROM file_permissions WHERE file_id = %s", (file_id,))
-                    # Only the owner is allowed to delete the file entry itself
+                    # Delete the file itself only if the requestor is the owner
                     cur.execute("DELETE FROM shared_files WHERE file_id = %s AND owner = %s", (file_id, owner))
                 conn.commit()
                 return True
@@ -103,7 +104,7 @@ class DatabaseManager:
             return False
 
     def revoke_all_except_owner(self, file_id, owner):
-        """Removes all other users' access to a file, keeping only the owner's access."""
+        """Locks the file so only the owner can access it."""
         try:
             with self.get_conn() as conn:
                 with conn.cursor() as cur:
@@ -118,7 +119,7 @@ class DatabaseManager:
             return False
 
     def delete_permission(self, file_id, recipient):
-        """Removes access for one specific recipient."""
+        """Specific removal of one user's access."""
         with self.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
