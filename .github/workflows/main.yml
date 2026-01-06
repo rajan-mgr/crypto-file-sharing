@@ -3,15 +3,21 @@ name: SecureShare CI/CD
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ] # Triggers when you push a tag like v1.0, v2.0
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
+  # 1. SECURITY SCAN: Checks code for vulnerabilities
   security_scan:
     name: Security Analysis
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -21,14 +27,15 @@ jobs:
     - name: Install Bandit
       run: pip install bandit
 
-    - name: Run Bandit Security Scan
-      # -r: recursive (scan all folders)
-      # -ll: only report Medium and High severity issues
-      # -x: exclude folders (like virtual environments)
+    - name: Run Bandit Scan
+      # -r: recursive, -ll: Medium/High severity only, -x: exclude folders
+      # we add || true if you want the build to continue even with warnings, 
+      # but for security, it's better to let it fail.
       run: bandit -r . -ll -x ./venv,./tests
 
+  # 2. BUILD AND TEST: Ensures code compiles and connects to DB
   build_and_test:
-    needs: security_scan # Only run build if security scan passes
+    needs: security_scan
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -46,7 +53,7 @@ jobs:
           --health-retries 5
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -60,3 +67,60 @@ jobs:
 
     - name: Run Syntax Check
       run: python -m compileall .
+
+  # 3. PUBLISH PACKAGE: Pushes the Docker Image to GitHub Packages
+  publish_package:
+    needs: build_and_test
+    runs-on: ubuntu-latest
+    # Only push to packages if we are pushing a Tag (v1, v2, etc)
+    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
+        run: |
+          # Prepare the image name (must be lowercase)
+          IMAGE_ID=ghcr.io/${{ github.repository_owner }}/secureshare
+          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+          
+          # Extract version from the git tag (e.g., v1.0.0)
+          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
+          
+          echo "Publishing Image: $IMAGE_ID Version: $VERSION"
+          
+          docker build -t $IMAGE_ID:$VERSION -t $IMAGE_ID:latest .
+          docker push $IMAGE_ID:$VERSION
+          docker push $IMAGE_ID:latest
+
+  # 4. CREATE RELEASE: Creates the "v1" entry in the Releases sidebar
+  create_release:
+    needs: publish_package
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ github.ref_name }}
+          body: |
+            SecureShare ${{ github.ref_name }}
+            
+            ### Deployment
+            Pull the image:
+            ```bash
+            docker pull ghcr.io/${{ github.repository_owner }}/secureshare:latest
+            ```
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
