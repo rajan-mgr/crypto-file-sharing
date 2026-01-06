@@ -1,4 +1,2 @@
-# For the GUI application
 cryptography>=41.0.0
-# Note: We're using cryptography for Fernet encryption
-# Install with: pip install cryptography
+psycopg2-binary

@@ -1,12 +1,9 @@
 # core/utils.py
-
 import base64
-
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.fernet import Fernet
-
 
 def generate_rsa_key_pair():
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -21,23 +18,28 @@ def generate_rsa_key_pair():
     )
     return private_pem, public_pem
 
-
 def derive_key_from_password(password: str, salt: bytes) -> bytes:
-    kdf = Scrypt(salt=salt, length=32, n=2**14, r=8, p=1)
-    return kdf.derive(password.encode())
-
+    """Derives a key and returns the URL-safe Base64 encoded version for Fernet."""
+    kdf = Scrypt(
+        salt=bytes(salt),  # Ensure salt is bytes, not memoryview
+        length=32, 
+        n=2**14, 
+        r=8, 
+        p=1
+    )
+    derived_bytes = kdf.derive(password.encode())
+    return base64.urlsafe_b64encode(derived_bytes)
 
 def encrypt_private_key(private_pem: bytes, password: str, salt: bytes) -> bytes:
     key = derive_key_from_password(password, salt)
-    f = Fernet(base64.urlsafe_b64encode(key))
+    f = Fernet(key)
     return f.encrypt(private_pem)
 
-
-def decrypt_private_key(encrypted: bytes, password: str, salt: bytes):
+def decrypt_private_key(encrypted_priv_key, password, salt):
     key = derive_key_from_password(password, salt)
-    f = Fernet(base64.urlsafe_b64encode(key))
-    return f.decrypt(encrypted)
-
+    f = Fernet(key)
+    # Ensure the token is bytes (important for Postgres memoryview compatibility)
+    return f.decrypt(bytes(encrypted_priv_key))
 
 def encrypt_sym_key_with_public(sym_key: bytes, public_pem: bytes) -> bytes:
     public_key = serialization.load_pem_public_key(public_pem)
@@ -50,17 +52,15 @@ def encrypt_sym_key_with_public(sym_key: bytes, public_pem: bytes) -> bytes:
         )
     )
 
-
 def decrypt_sym_key_with_private(encrypted_sym: bytes, private_key) -> bytes:
     return private_key.decrypt(
-        encrypted_sym,
+        bytes(encrypted_sym),
         padding.OAEP(
             mgf=padding.MGF1(algorithm=hashes.SHA256()),
             algorithm=hashes.SHA256(),
             label=None
         )
     )
-
 
 def sign_data(data: bytes, private_key) -> bytes:
     return private_key.sign(
@@ -72,13 +72,12 @@ def sign_data(data: bytes, private_key) -> bytes:
         hashes.SHA256()
     )
 
-
 def verify_signature(data: bytes, signature: bytes, public_pem: bytes) -> bool:
-    public_key = serialization.load_pem_public_key(public_pem)
     try:
+        public_key = serialization.load_pem_public_key(public_pem)
         public_key.verify(
-            signature,
-            data,
+            bytes(signature),
+            bytes(data),
             padding.PSS(
                 mgf=padding.MGF1(hashes.SHA256()),
                 salt_length=padding.PSS.MAX_LENGTH
@@ -88,6 +87,3 @@ def verify_signature(data: bytes, signature: bytes, public_pem: bytes) -> bool:
         return True
     except Exception:
         return False
-
-
-# Ensure newline at end of file

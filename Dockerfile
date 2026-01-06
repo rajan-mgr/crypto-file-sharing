@@ -1,4 +1,3 @@
-
 FROM python:3.12-slim
 
 # Install system dependencies for Tkinter GUI
@@ -12,7 +11,6 @@ RUN apt-get update && \
         libssl-dev \
         wget \
     && rm -rf /var/lib/apt/lists/*
-
 
 WORKDIR /securefile-app
 
