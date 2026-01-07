@@ -1,0 +1,136 @@
+name: SecureShare CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ] # Triggers Release/Package jobs when you push tags like v1.0
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # 1. SAST & QUALITY: Scans for security holes and bad code style
+  lint_and_security:
+    name: Code Analysis (Bandit & Flake8)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Install Analysis Tools
+      run: pip install bandit flake8
+
+    - name: Run Bandit (Security Scan)
+      # -r: recursive, -ll: Med/High severity, -x: exclude folders
+      run: bandit -r . -ll -x ./venv,./tests
+
+    - name: Run Flake8 (Linting)
+      # Checks for syntax errors and PEP8 violations
+      run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+  # 2. UNIT TESTING: Runs your test.py logic with Postgres service
+  testing:
+    needs: lint_and_security
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_DB: mysecurefileshare
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: post
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Install App Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run Python Tests
+      run: python3 test.py
+
+  # 3. BUILD & PUBLISH: Pushes Docker Image to GHCR.io
+  publish_ghcr:
+    needs: testing
+    name: Build & Push to GHCR
+    runs-on: ubuntu-latest
+    # Only run this step if we are pushing a Tag (Release)
+    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
+        run: |
+          # Lowercase the repo name for Docker compatibility
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[A-Z]' '[a-z]')
+          IMAGE_NAME=ghcr.io/$REPO_LOWER
+          
+          # Extract version from tag (v1.0.0)
+          VERSION=${{ github.ref_name }}
+          
+          echo "Pushing $IMAGE_NAME with versions $VERSION and latest"
+          
+          docker build -t $IMAGE_NAME:$VERSION -t $IMAGE_NAME:latest .
+          docker push $IMAGE_NAME:$VERSION
+          docker push $IMAGE_NAME:latest
+
+  # 4. GITHUB RELEASE: Creates the Release entry in the UI
+  create_release:
+    needs: publish_ghcr
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: SecureShare ${{ github.ref_name }}
+          tag_name: ${{ github.ref }}
+          body: |
+            ## SecureShare Release ${{ github.ref_name }}
+            
+            ### Security Features
+            - Hybrid Encryption (RSA + AES)
+            - Digital Signatures verified on download
+            - SAST (Bandit) Verified
+            
+            ### Docker Deployment
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:latest
+            ```
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
