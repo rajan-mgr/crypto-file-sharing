@@ -3,11 +3,7 @@ name: Security Scan + Release CI
 on:
   push:
     branches: [main]
-<<<<<<< HEAD
     tags: ['v*'] # Triggers when you push a version tag like v1.0, v2.1.4
-=======
-    tags: ['v*'] # Triggers when you push a tag like v1.0
->>>>>>> e6622e4 (adding main)
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -16,13 +12,8 @@ jobs:
   ci-pipeline:
     runs-on: ubuntu-latest
     permissions:
-<<<<<<< HEAD
-      contents: write   # Required to create the Release entry
-      packages: write   # Required to push to ghcr.io
-=======
       contents: write   # Required to create Releases
       packages: write   # Required to push to GHCR.io
->>>>>>> e6622e4 (adding main)
 
     steps:
       - name: Checkout code
@@ -33,39 +24,21 @@ jobs:
         with:
           python-version: '3.12'
 
-<<<<<<< HEAD
       - name: Install dependencies
         run: |
           pip install pylint pytest bandit cryptography psycopg2-binary python-dotenv
 
-      - name: Bandit (SAST - Security Scan)
-        run: bandit -r . --exit-zero
-        
-
-      - name: Run Tests (Unittest/Pytest)
-        run: python -m unittest test.py
-
-      - name: Log in to GHCR
-        # Only log in if we are pushing a tag or code to main
-=======
-      - name: Install tools
-        run: |
-          pip install pylint pytest bandit cryptography psycopg2-binary python-dotenv
-
       - name: Run pylint (Code Quality)
-        # We use exit-zero so the build doesn't fail on style warnings, only errors
+        # exit-zero ensures the build doesn't fail on style warnings
         run: pylint core/ utils.py --exit-zero
 
       - name: Run Bandit (SAST - Security Scan)
         run: bandit -r . -ll -x ./venv
 
       - name: Run pytest (Functional Tests)
-        # This will run your test.py if you rename it to test_*.py 
-        # or you can change this to: python -m unittest test.py
         run: python -m unittest test.py
 
       - name: Log in to GHCR
->>>>>>> e6622e4 (adding main)
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
@@ -73,24 +46,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-<<<<<<< HEAD
-      - name: Build and Push Docker Image
-=======
       - name: Build and push Docker image
->>>>>>> e6622e4 (adding main)
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-<<<<<<< HEAD
-          # This tags the package as 'latest' AND the specific version (e.g., v1.0)
           tags: |
             ghcr.io/${{ github.repository_owner }}/secureshare:latest
             ghcr.io/${{ github.repository_owner }}/secureshare:${{ github.ref_name }}
 
       - name: Create GitHub Release
-        # ONLY runs if you pushed a tag (e.g., git push origin v1.0)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
@@ -104,21 +70,5 @@ jobs:
             docker pull ghcr.io/${{ github.repository_owner }}/secureshare:${{ github.ref_name }}
             ```
           generate_release_notes: true
-=======
-          tags: |
-            ghcr.io/${{ github.repository }}/secureshare:latest
-            ghcr.io/${{ github.repository }}/secureshare:${{ github.ref_name }}
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          name: Release ${{ github.ref_name }}
-          generate_release_notes: true
-          body: |
-            ### SecureShare Deployment
-            The docker image for this version is available at:
-            `docker pull ghcr.io/${{ github.repository }}/secureshare:${{ github.ref_name }}`
->>>>>>> e6622e4 (adding main)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
