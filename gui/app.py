@@ -1,7 +1,8 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
-import base64
+import os
+import subprocess
 from core.secure_share import SecureShareSystem
 
 
@@ -39,7 +40,6 @@ class SecureShareApp:
         style.configure('TLabelframe', background=self.panel_bg, foreground=self.fg_color)
         style.configure('TLabelframe.Label', background=self.panel_bg, foreground=self.fg_color, font=('Courier New', 13, 'bold'))
 
-        # TAB VISIBILITY FIX
         style.configure('TNotebook', background=self.bg_color, borderwidth=0)
         style.configure('TNotebook.Tab', background='#002200', foreground=self.fg_color, padding=[15, 5])
         style.map('TNotebook.Tab', 
@@ -158,8 +158,22 @@ class SecureShareApp:
         ttk.Button(tab, text="Encrypt & Share", style='Accent.TButton', command=self.do_share_file).pack(pady=30)
 
     def browse_file(self):
-        path = filedialog.askopenfilename()
-        if path: self.share_path_var.set(path)
+        """Cross-platform file chooser: Windows Tk dialog, Linux Zenity fallback"""
+        path = None
+        if os.name == 'posix':  # Linux
+            try:
+                result = subprocess.run(
+                    ["zenity", "--file-selection", "--title=Select a file", "--filename=" + str(Path.home()) + "/"],
+                    capture_output=True, text=True
+                )
+                path = result.stdout.strip()
+            except Exception:
+                path = None
+        if not path:
+            # Windows or fallback
+            path = filedialog.askopenfilename(initialdir=str(Path.home()))
+        if path:
+            self.share_path_var.set(path)
 
     def do_share_file(self):
         path = self.share_path_var.get()
@@ -185,8 +199,6 @@ class SecureShareApp:
         btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="Download", style='Accent.TButton', command=self.do_download).pack(side=tk.LEFT, padx=10)
         ttk.Button(btn_frame, text="Refresh", command=self.refresh_files_list).pack(side=tk.LEFT, padx=10)
-        
-        # ADDED FEATURES
         ttk.Button(btn_frame, text="Revoke Access", command=self.do_revoke_access).pack(side=tk.LEFT, padx=10)
         ttk.Button(btn_frame, text="Delete File", command=self.do_delete_file).pack(side=tk.LEFT, padx=10)
 
@@ -249,6 +261,7 @@ class SecureShareApp:
         self.system.current_user = None
         self.current_password = None
         self.show_welcome_screen()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
