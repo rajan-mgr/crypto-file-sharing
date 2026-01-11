@@ -1,15 +1,14 @@
-```bash
-# Install dependencies
-# Arch-based
-sudo pacman -S xorg-xhost
+To run this app fo to  the image from latest package and pull with docker.
+Since it a gui based app we need to run one command before running it.
 
-# Debian-based
-sudo apt install xorg-xhost
+1. Install xorg-xhost:
+   Most pc already came installed with it u can jump to second option.
+   (archbased)
+   ```bash   sudo pacman -S xorg-xhost```
+  (debian based)
+  ``` bash sudo apt install xorg-xhost```
 
-# Step 1: Allow local Docker access to X server
-xhost +local:docker
+2.```bash xhost +local:docker ```
 
-# The .env file will be provided in the report.
-
-# Step 2: Run Docker container
-docker run -it --rm --env-file .env -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix imagename_or_id
+The .env file will be provided in the document.
+3. ```bash docker run -it --rm --env-file .env -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix imagename or id"```
