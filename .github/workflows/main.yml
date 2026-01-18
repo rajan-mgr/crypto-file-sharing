@@ -3,15 +3,15 @@ name: Security Scan + Release CI
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['v*']  # Triggers on version tags like v1.0.0, v2.1.4
   pull_request:
     branches: [main]
   workflow_dispatch:
 
+# Workflow-level permissions (important for GHCR push)
 permissions:
   contents: read
   packages: write
-  id-token: write
 
 env:
   REGISTRY: ghcr.io
@@ -87,7 +87,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
     
     steps:
       - name: Checkout code
@@ -96,27 +95,22 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
-      - name: Prepare image name
-        id: image
-        run: |
-          # Convert to lowercase for GHCR compatibility
-          REPO_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "repo_owner=${REPO_LOWER}" >> $GITHUB_OUTPUT
-          echo "📦 Image will be: ghcr.io/${REPO_LOWER}/cryptoshare-backend"
-      
-      # Use the GHCR_PAT secret you created
+      # Login to GHCR
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GHCR_PAT }}
+          username: ${{ github.actor }}
+          # Option 1: use default GITHUB_TOKEN (make sure workflow permissions are correct)
+          password: ${{ secrets.GITHUB_TOKEN }}
+          # Option 2: If GITHUB_TOKEN fails, create a PAT with write:packages and use:
+          # password: ${{ secrets.GHCR_PAT }}
       
       - name: Extract metadata for Backend
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ steps.image.outputs.repo_owner }}/cryptoshare-backend
+          images: ghcr.io/${{ github.repository_owner }}/cryptoshare-backend
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -134,7 +128,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          platforms: linux/amd64
 
   build-frontend-executables:
     needs: security-and-tests
@@ -188,12 +181,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Prepare repository name
-        id: repo
-        run: |
-          REPO_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "repo_owner=${REPO_LOWER}" >> $GITHUB_OUTPUT
-      
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -203,8 +190,10 @@ jobs:
         run: |
           mkdir -p deploy-package
           
+          # Copy docker-compose for production
           cp docker-compose.yml deploy-package/docker-compose.yml
           
+          # Create .env template
           cat > deploy-package/.env.example << 'EOF'
           # PostgreSQL Configuration
           POSTGRES_USER=cow
@@ -216,6 +205,7 @@ jobs:
           DATABASE_URL=postgresql://cow:CHANGE_THIS_PASSWORD@db:5432/cryptoshare
           EOF
           
+          # Create README
           cat > deploy-package/README.md << 'EOF'
           # CryptoShare Deployment Guide
           
@@ -223,7 +213,7 @@ jobs:
           
           ### 1. Pull the Docker images
           ```bash
-          docker pull ghcr.io/${{ steps.repo.outputs.repo_owner }}/cryptoshare-backend:${{ github.ref_name }}
+          docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
           docker pull postgres:15-alpine
           ```
           
@@ -237,7 +227,7 @@ jobs:
           Edit docker-compose.yml and change the backend image to:
           ```yaml
           backend:
-            image: ghcr.io/${{ steps.repo.outputs.repo_owner }}/cryptoshare-backend:${{ github.ref_name }}
+            image: ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
           ```
           
           ### 4. Start services
@@ -272,6 +262,7 @@ jobs:
           Report issues at: https://github.com/${{ github.repository }}/issues
           EOF
           
+          # Create archive
           tar -czf cryptoshare-${{ github.ref_name }}-deployment.tar.gz deploy-package/
       
       - name: Create GitHub Release
@@ -284,7 +275,7 @@ jobs:
             ### 📦 What's Included
             
             #### Docker Backend Image
-            - **Backend API**: `ghcr.io/${{ steps.repo.outputs.repo_owner }}/cryptoshare-backend:${{ github.ref_name }}`
+            - **Backend API**: `ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}`
             - **Database**: PostgreSQL 15 Alpine (official image)
             
             #### Desktop Applications
@@ -300,7 +291,7 @@ jobs:
             
             ```bash
             # 1. Pull backend image
-            docker pull ghcr.io/${{ steps.repo.outputs.repo_owner }}/cryptoshare-backend:${{ github.ref_name }}
+            docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
             
             # 2. Download and extract deployment package
             wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/cryptoshare-${{ github.ref_name }}-deployment.tar.gz
@@ -312,7 +303,7 @@ jobs:
             nano .env  # Change passwords and secret key!
             
             # 4. Update docker-compose.yml backend image to:
-            #    image: ghcr.io/${{ steps.repo.outputs.repo_owner }}/cryptoshare-backend:${{ github.ref_name }}
+            #    image: ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
             
             # 5. Start services
             docker-compose up -d
@@ -342,7 +333,7 @@ jobs:
             
             ### Docker Backend
             \`\`\`bash
-            docker pull ghcr.io/${{ steps.repo.outputs.repo_owner }}/cryptoshare-backend:${tag}
+            docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${tag}
             \`\`\`
             
             ### Desktop Apps
@@ -352,6 +343,7 @@ jobs:
             [View Release](https://github.com/${{ github.repository }}/releases/tag/${tag})
             `;
             
+            // This will show in the Actions summary
             core.summary
               .addHeading('Release Created Successfully')
               .addRaw(message)
