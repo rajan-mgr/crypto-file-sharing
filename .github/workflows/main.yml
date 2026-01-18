@@ -107,7 +107,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest  # always update latest on tag release
+            type=raw,value=latest   # always update latest on tag release
       
       - name: Build and push Backend image
         uses: docker/build-push-action@v5
