@@ -102,7 +102,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           # Option 1: use default GITHUB_TOKEN (make sure workflow permissions are correct)
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_PAT }}
           # Option 2: If GITHUB_TOKEN fails, create a PAT with write:packages and use:
           # password: ${{ secrets.GHCR_PAT }}
       
