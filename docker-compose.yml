@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: cryptoshare-db
+    environment:
+      POSTGRES_USER: cow
+      POSTGRES_PASSWORD: cow123
+      POSTGRES_DB: cryptoshare
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cow -d cryptoshare"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cryptoshare-network
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cryptoshare-backend
+    environment:
+      DATABASE_URL: postgresql://cow:cow123@db:5432/cryptoshare
+      SECRET_KEY: ${SECRET_KEY:-4e93c83b865522a7709322874138e65306660183610938f32274191c9641753c}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - cryptoshare-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  cryptoshare-network:
+    driver: bridge

@@ -1,9 +1,10 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 from pathlib import Path
 import os
 import subprocess
-from core.secure_share import SecureShareSystem
+import requests
+from secure_share import SecureShareSystem
 
 
 class SecureShareApp:
@@ -42,8 +43,8 @@ class SecureShareApp:
 
         style.configure('TNotebook', background=self.bg_color, borderwidth=0)
         style.configure('TNotebook.Tab', background='#002200', foreground=self.fg_color, padding=[15, 5])
-        style.map('TNotebook.Tab', 
-                  background=[('selected', self.accent_color)], 
+        style.map('TNotebook.Tab',
+                  background=[('selected', self.accent_color)],
                   foreground=[('selected', '#000000')])
 
         style.configure('TEntry', fieldbackground=self.entry_bg, foreground=self.fg_color, insertcolor=self.fg_color, font=('Courier New', 12))
@@ -106,23 +107,39 @@ class SecureShareApp:
     def do_login(self):
         username = self.login_username.get().strip()
         password = self.login_password.get()
-        if self.system.login_user(username, password):
+        if not username or not password:
+            messagebox.showerror("Error", "Please enter username and password")
+            return
+
+        if self.system.login(username, password):
             self.current_password = password
+            messagebox.showinfo("Success", f"Welcome, {username}!")
             self.show_main_dashboard()
         else:
             messagebox.showerror("Error", "Invalid username or password")
 
     def do_register(self):
         username = self.reg_username.get().strip()
-        p1, p2 = self.reg_password.get(), self.reg_confirm.get()
-        if p1 == p2 and len(p1) >= 8:
-            if self.system.register_user(username, p1):
-                messagebox.showinfo("Success", "Account created!")
-                self.show_welcome_screen()
-            else:
-                messagebox.showerror("Error", "Username taken")
+        p1 = self.reg_password.get()
+        p2 = self.reg_confirm.get()
+
+        if not username or not p1 or not p2:
+            messagebox.showerror("Error", "All fields are required")
+            return
+
+        if p1 != p2:
+            messagebox.showerror("Error", "Passwords do not match")
+            return
+
+        if len(p1) < 8:
+            messagebox.showerror("Error", "Password must be at least 8 characters")
+            return
+
+        if self.system.register(username, p1):
+            messagebox.showinfo("Success", "Account created! You can now login.")
+            self.show_welcome_screen()
         else:
-            messagebox.showerror("Error", "Passwords must match and be 8+ chars")
+            messagebox.showerror("Error", "Registration failed (username may be taken or server error)")
 
     def show_main_dashboard(self):
         self.clear_screen()
@@ -142,123 +159,334 @@ class SecureShareApp:
     def create_share_tab(self):
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Share File")
+
         file_frame = ttk.Labelframe(tab, text="Select File", padding=20)
         file_frame.pack(fill=tk.X, padx=20, pady=20)
+
         self.share_path_var = tk.StringVar()
         ttk.Entry(file_frame, textvariable=self.share_path_var).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 10))
         ttk.Button(file_frame, text="Browse...", command=self.browse_file).pack(side=tk.RIGHT)
+
         recip_frame = ttk.Labelframe(tab, text="Recipients", padding=20)
         recip_frame.pack(fill=tk.X, padx=20, pady=20)
-        others = [u for u in self.system.get_all_users() if u != self.system.current_user]
+
+        others = []
+        try:
+            r = requests.get(f"{self.system.api_base}/users", headers=self.system._headers(), timeout=8)
+            r.raise_for_status()
+            all_users = r.json()
+            others = [u for u in all_users if u != self.system.current_user]
+        except Exception as e:
+            print("Failed to load users:", str(e))
+            messagebox.showwarning("Warning", "Could not load other users. Sharing will be limited.")
+
         self.recip_vars = {}
         for i, user in enumerate(others):
             var = tk.BooleanVar()
             ttk.Checkbutton(recip_frame, text=user, variable=var).grid(row=i//4, column=i%4, sticky=tk.W, padx=15, pady=5)
             self.recip_vars[user] = var
+
         ttk.Button(tab, text="Encrypt & Share", style='Accent.TButton', command=self.do_share_file).pack(pady=30)
 
     def browse_file(self):
-        """Cross-platform file chooser: Windows Tk dialog, Linux Zenity fallback"""
-        path = None
-        if os.name == 'posix':  # Linux
-            try:
-                result = subprocess.run(
-                    ["zenity", "--file-selection", "--title=Select a file", "--filename=" + str(Path.home()) + "/"],
-                    capture_output=True, text=True
-                )
-                path = result.stdout.strip()
-            except Exception:
-                path = None
-        if not path:
-            # Windows or fallback
-            path = filedialog.askopenfilename(initialdir=str(Path.home()))
+        path = filedialog.askopenfilename(initialdir=str(Path.home()))
         if path:
             self.share_path_var.set(path)
 
     def do_share_file(self):
         path = self.share_path_var.get()
         recipients = [u for u, v in self.recip_vars.items() if v.get()]
-        if path and recipients:
-            if self.system.share_file(path, recipients, self.current_password):
-                messagebox.showinfo("Success", "File shared!")
-                self.refresh_files_list()
-            else:
-                messagebox.showerror("Error", "Sharing failed")
+
+        if not path:
+            messagebox.showerror("Error", "Please select a file")
+            return
+        if not recipients:
+            messagebox.showerror("Error", "Select at least one recipient")
+            return
+
+        if self.system.share_file(path, recipients, self.current_password):
+            messagebox.showinfo("Success", "File encrypted and shared successfully!")
+            self.refresh_files_list()
+        else:
+            messagebox.showerror("Error", "Sharing failed - check console for details")
 
     def create_files_tab(self):
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="My Files")
+
         tree_frame = ttk.Frame(tab)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
         cols = ("ID", "Filename", "Owner", "Date")
         self.files_tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
-        for c in cols: self.files_tree.heading(c, text=c)
+        for c in cols:
+            self.files_tree.heading(c, text=c)
+            self.files_tree.column(c, anchor=tk.CENTER if c in ["ID", "Date"] else tk.W)
         self.files_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+
+        self.files_tree.bind('<<TreeviewSelect>>', self.on_file_select)
+
         btn_frame = ttk.Frame(tab)
         btn_frame.pack(pady=10)
-        ttk.Button(btn_frame, text="Download", style='Accent.TButton', command=self.do_download).pack(side=tk.LEFT, padx=10)
-        ttk.Button(btn_frame, text="Refresh", command=self.refresh_files_list).pack(side=tk.LEFT, padx=10)
-        ttk.Button(btn_frame, text="Revoke Access", command=self.do_revoke_access).pack(side=tk.LEFT, padx=10)
-        ttk.Button(btn_frame, text="Delete File", command=self.do_delete_file).pack(side=tk.LEFT, padx=10)
+
+        self.btn_download = ttk.Button(btn_frame, text="Download", style='Accent.TButton', command=self.do_download)
+        self.btn_refresh  = ttk.Button(btn_frame, text="Refresh",  command=self.refresh_files_list)
+        self.btn_revoke   = ttk.Button(btn_frame, text="Revoke Access", style='Accent.TButton', command=self.do_revoke_access, state="disabled")
+        self.btn_delete   = ttk.Button(btn_frame, text="Delete File",   style='Accent.TButton', command=self.do_delete_file,   state="disabled")
+
+        self.btn_download.pack(side=tk.LEFT, padx=10)
+        self.btn_refresh.pack(side=tk.LEFT, padx=10)
+        self.btn_revoke.pack(side=tk.LEFT, padx=10)
+        self.btn_delete.pack(side=tk.LEFT, padx=10)
 
         self.refresh_files_list()
 
-    def do_revoke_access(self):
+    def on_file_select(self, event):
         sel = self.files_tree.selection()
-        if not sel: return
-        file_id = sel[0]
-        if messagebox.askyesno("Revoke", "Revoke access for all other users?"):
-            if self.system.db.revoke_all_except_owner(file_id, self.system.current_user):
-                messagebox.showinfo("Success", "Access revoked.")
-                self.refresh_files_list()
+        if not sel:
+            self.btn_revoke.config(state="disabled")
+            self.btn_delete.config(state="disabled")
+            return
 
-    def do_delete_file(self):
-        sel = self.files_tree.selection()
-        if not sel: return
-        file_id = sel[0]
-        if messagebox.askyesno("Delete", "Delete this file permanently?"):
-            if self.system.db.delete_file(file_id, self.system.current_user):
-                messagebox.showinfo("Success", "File deleted.")
-                self.refresh_files_list()
-            else:
-                messagebox.showerror("Error", "Only the owner can delete this file.")
+        item = self.files_tree.item(sel[0])
+        owner = item["values"][2]  # Owner is third column
+
+        if owner == self.system.current_user:
+            self.btn_revoke.config(state="normal")
+            self.btn_delete.config(state="normal")
+        else:
+            self.btn_revoke.config(state="disabled")
+            self.btn_delete.config(state="disabled")
 
     def refresh_files_list(self):
-        for i in self.files_tree.get_children(): self.files_tree.delete(i)
-        for f in self.system.get_shared_files():
-            self.files_tree.insert("", tk.END, iid=f.file_id, values=(f.file_id[:8], f.filename, f.owner, f.timestamp[:10]))
+        for i in self.files_tree.get_children():
+            self.files_tree.delete(i)
+
+        files = self.system.get_my_files()
+        for f in files:
+            date_str = f.timestamp[:10] if f.timestamp and len(f.timestamp) >= 10 else "N/A"
+            self.files_tree.insert("", tk.END, iid=f.file_id, values=(
+                f.file_id[:8] + "...",
+                f.filename,
+                f.owner,
+                date_str
+            ))
 
     def do_download(self):
         sel = self.files_tree.selection()
-        if sel:
-            file_id = sel[0]
-            filename = self.files_tree.item(file_id)['values'][1]
-            path = filedialog.asksaveasfilename(initialfile=filename)
-            if path:
-                if self.system.download_file(file_id, path, self.current_password):
-                    messagebox.showinfo("Success", "File decrypted and saved!")
-                else:
-                    messagebox.showerror("Error", "Download/Decryption failed")
+        if not sel:
+            messagebox.showwarning("No selection", "Please select a file first")
+            return
+
+        file_id = sel[0]
+        filename = self.files_tree.item(file_id)['values'][1]
+        save_path = filedialog.asksaveasfilename(initialfile=filename, defaultextension=".bin")
+        if not save_path:
+            return
+
+        if self.system.download_file(file_id, save_path, self.current_password):
+            messagebox.showinfo("Success", f"File decrypted and saved to:\n{save_path}")
+        else:
+            messagebox.showerror("Error", "Download or decryption failed")
+
+    def do_revoke_access(self):
+        sel = self.files_tree.selection()
+        if not sel:
+            messagebox.showwarning("No selection", "Please select a file first")
+            return
+
+        file_id = sel[0]
+        filename = self.files_tree.item(file_id)["values"][1]
+
+        target = simpledialog.askstring(
+            title="Revoke Access",
+            prompt=f"Enter username to revoke access from:\n{filename}",
+            parent=self.root
+        )
+
+        if not target or not target.strip():
+            return
+
+        target = target.strip()
+
+        if not messagebox.askyesno("Confirm Revoke", f"Revoke access for '{target}' from '{filename}'?"):
+            return
+
+        try:
+            r = requests.delete(
+                f"{self.system.api_base}/files/{file_id}/access/{target}",
+                headers=self.system._headers(),
+                timeout=10
+            )
+            r.raise_for_status()
+            messagebox.showinfo("Success", f"Access revoked for {target}")
+            self.refresh_files_list()
+        except requests.HTTPError as e:
+            detail = e.response.json().get("detail", "Unknown error") if e.response else str(e)
+            messagebox.showerror("Revoke Failed", detail)
+        except Exception as e:
+            messagebox.showerror("Error", f"Connection failed:\n{str(e)}")
+
+    def do_delete_file(self):
+        sel = self.files_tree.selection()
+        if not sel:
+            messagebox.showwarning("No selection", "Please select a file first")
+            return
+
+        file_id = sel[0]
+        filename = self.files_tree.item(file_id)["values"][1]
+
+        if not messagebox.askyesno("Confirm Delete", f"Delete file '{filename}' permanently?\nThis action cannot be undone."):
+            return
+
+        try:
+            r = requests.delete(
+                f"{self.system.api_base}/files/{file_id}",
+                headers=self.system._headers(),
+                timeout=12
+            )
+            r.raise_for_status()
+            messagebox.showinfo("Success", f"File '{filename}' has been deleted")
+            self.refresh_files_list()
+        except requests.HTTPError as e:
+            detail = e.response.json().get("detail", "Unknown error") if e.response else str(e)
+            messagebox.showerror("Delete Failed", detail)
+        except Exception as e:
+            messagebox.showerror("Error", f"Connection failed:\n{str(e)}")
 
     def create_users_tab(self):
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Users")
-        tree = ttk.Treeview(tab, columns=("User"), show="headings")
+
+        tree = ttk.Treeview(tab, columns=("User",), show="headings")
         tree.heading("User", text="Username")
+        tree.column("User", anchor=tk.W)
         tree.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
-        for u in self.system.get_all_users():
+
+        try:
+            r = requests.get(f"{self.system.api_base}/users", headers=self.system._headers(), timeout=8)
+            r.raise_for_status()
+            users_list = r.json()
+        except Exception as e:
+            print("Failed to load users:", str(e))
+            users_list = [self.system.current_user]
+
+        for u in sorted(users_list):
             tree.insert("", tk.END, values=(u,))
 
     def create_certificate_tab(self):
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Certificate")
-        user_data = self.system.db.get_user(self.system.current_user)
-        info = f"SUBJECT: {user_data['username']}\nPUBLIC KEY PEM:\n{user_data['public_key_pem'][:200]}..."
-        ttk.Label(tab, text=info, font=('Courier New', 10), padding=30, justify=tk.LEFT).pack()
+
+        # Create scrollable text widget for certificate info
+        text_frame = ttk.Frame(tab)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+
+        # Title
+        ttk.Label(text_frame, text=f"User Certificate: {self.system.current_user}", 
+                  font=('Courier New', 14, 'bold'), 
+                  foreground=self.accent_color).pack(pady=(0, 20))
+
+        # Create text widget with scrollbar
+        text_widget = tk.Text(text_frame, 
+                              wrap=tk.WORD, 
+                              font=('Courier New', 9),
+                              bg=self.panel_bg,
+                              fg=self.fg_color,
+                              insertbackground=self.fg_color,
+                              selectbackground='#004400',
+                              selectforeground=self.accent_color,
+                              relief=tk.FLAT,
+                              padx=15,
+                              pady=15)
+        
+        scrollbar = ttk.Scrollbar(text_frame, command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Fetch and display certificate info
+        try:
+            # Get public key
+            r = requests.get(
+                f"{self.system.api_base}/users/me/public-key",
+                headers=self.system._headers(),
+                timeout=8
+            )
+            r.raise_for_status()
+            public_key_pem = r.json()["public_key_pem"]
+
+            # Extract first and last few lines of public key
+            key_lines = public_key_pem.strip().split('\n')
+            if len(key_lines) > 6:
+                # Show first 3 lines, ..., last 3 lines
+                key_preview = '\n'.join(key_lines[:3]) + '\n... [key data truncated] ...\n' + '\n'.join(key_lines[-3:])
+            else:
+                key_preview = public_key_pem
+            
+            # Build certificate display
+            cert_info = f"""╔═══════════════════════════════════════════════════════════════╗
+║                    CRYPTOSHARE CERTIFICATE                    ║
+╚═══════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────┐
+│ SUBJECT INFORMATION                                             │
+└─────────────────────────────────────────────────────────────────┘
+
+  Username (CN):        {self.system.current_user}
+  Issuer:               SecureShare Certificate Authority
+  Status:               Active
+  
+┌─────────────────────────────────────────────────────────────────┐
+│ PUBLIC KEY (RSA 2048-bit)                                       │
+└─────────────────────────────────────────────────────────────────┘
+
+{key_preview}
+
+┌─────────────────────────────────────────────────────────────────┐
+│ PRIVATE KEY                                                     │
+└─────────────────────────────────────────────────────────────────┘
+
+  Status:               Encrypted with user password
+  Algorithm:            Fernet (AES-128-CBC)
+  Key Derivation:       Scrypt (N=16384, r=8, p=1)
+  Storage:              Secure database storage
+  
+┌─────────────────────────────────────────────────────────────────┐
+│ SECURITY NOTES                                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+  • Your private key is encrypted with your password
+  • Private key never leaves the server unencrypted
+  • Public key is shared with other users for encryption
+  • Only you can decrypt files shared with you
+  • Keep your password secure - it cannot be recovered
+
+╔═══════════════════════════════════════════════════════════════╗
+║                     END OF CERTIFICATE                        ║
+╚═══════════════════════════════════════════════════════════════╝
+"""
+            
+            text_widget.insert('1.0', cert_info)
+            text_widget.config(state=tk.DISABLED)  # Make read-only
+
+        except Exception as e:
+            error_msg = f"""╔═══════════════════════════════════════════════════════════════╗
+║                         ERROR                                 ║
+╚═══════════════════════════════════════════════════════════════╝
+
+Failed to load certificate information.
+
+Error: {str(e)}
+
+Please ensure you are logged in and the backend is running.
+"""
+            text_widget.insert('1.0', error_msg)
+            text_widget.config(state=tk.DISABLED)
 
     def logout(self):
-        self.system.current_user = None
+        self.system.logout()
         self.current_password = None
         self.show_welcome_screen()
 
