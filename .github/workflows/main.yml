@@ -338,4 +338,4 @@ jobs:
             core.summary
               .addHeading('Release Created Successfully')
               .addRaw(message)
-              .write();
+              .write()
