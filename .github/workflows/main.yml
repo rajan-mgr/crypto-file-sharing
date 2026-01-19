@@ -150,38 +150,91 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: Install GUI dependencies
+      - name: Install dependencies
         run: |
           pip install -r gui/requirements.txt
           pip install pyinstaller
       
-      - name: Clean old PyInstaller artifacts
+      - name: Create PyInstaller spec file
         shell: bash
         run: |
-          rm -rf build dist *.spec gui/__pycache__
+          cd gui
+          cat > SecureShare.spec << 'EOF'
+          # -*- mode: python ; coding: utf-8 -*-
+
+          block_cipher = None
+
+          a = Analysis(
+              ['app.py'],
+              pathex=[],
+              binaries=[],
+              datas=[],
+              hiddenimports=[
+                  'secure_share',
+                  'cryptography',
+                  'cryptography.fernet',
+                  'cryptography.hazmat',
+                  'cryptography.hazmat.primitives',
+                  'cryptography.hazmat.backends',
+                  'requests',
+                  'tkinter',
+                  'tkinter.ttk',
+                  'tkinter.messagebox',
+                  'tkinter.filedialog',
+                  'tkinter.scrolledtext',
+              ],
+              hookspath=[],
+              hooksconfig={},
+              runtime_hooks=[],
+              excludes=[],
+              win_no_prefer_redirects=False,
+              win_private_assemblies=False,
+              cipher=block_cipher,
+              noarchive=False,
+          )
+
+          pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+          exe = EXE(
+              pyz,
+              a.scripts,
+              a.binaries,
+              a.zipfiles,
+              a.datas,
+              [],
+              name='SecureShare',
+              debug=False,
+              bootloader_ignore_signals=False,
+              strip=False,
+              upx=True,
+              upx_exclude=[],
+              runtime_tmpdir=None,
+              console=False,  # No console window on Windows
+              disable_windowed_traceback=False,
+              argv_emulation=False,
+              target_arch=None,
+              codesign_identity=None,
+              entitlements_file=None,
+          )
+          EOF
       
-      - name: Build GUI executable (FIXED PATH ISSUE)
+      - name: Build executable with spec file
         shell: bash
         run: |
-          pyinstaller \
-            --clean \
-            --onefile \
-            --noconsole \
-            --name SecureShare \
-            --paths gui \
-            gui/app.py
+          cd gui
+          pyinstaller SecureShare.spec
       
       - name: Verify build output
         shell: bash
         run: |
           echo "=== Build Output ==="
-          ls -lh dist/
+          ls -lh gui/dist/
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/${{ matrix.output_file }}
+          path: gui/dist/${{ matrix.output_file }}
 
   package-gui-source:
     needs: security-and-tests
