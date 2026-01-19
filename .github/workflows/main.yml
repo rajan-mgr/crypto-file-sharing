@@ -9,8 +9,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
+  id-token: write
 
 env:
   REGISTRY: ghcr.io
@@ -76,7 +77,7 @@ jobs:
         run: python test_app.py
         timeout-minutes: 5
 
-  build-and-push-backend:
+  build-and-push-images:
     needs: security-and-tests
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
@@ -91,32 +92,71 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
-      # Login to GHCR using PAT
+      # Login to GHCR - uses GITHUB_TOKEN by default which has package permissions
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       
+      # Extract metadata for Backend
       - name: Extract metadata for Backend
-        id: meta
+        id: meta-backend
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/cryptoshare-backend
           tags: |
+            type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest   # always update latest on tag release
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=CryptoShare Backend
+            org.opencontainers.image.description=Secure file sharing backend with encryption
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
       
+      # Build and push Backend image
       - name: Build and push Backend image
         uses: docker/build-push-action@v5
         with:
           context: ./backend
           file: ./backend/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      # Extract metadata for Database (if you have custom DB setup)
+      - name: Extract metadata for Database
+        id: meta-db
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/cryptoshare-db
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=CryptoShare Database
+            org.opencontainers.image.description=PostgreSQL database with initialization scripts
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+      
+      # Build and push Database image (if you have a custom Dockerfile)
+      # Otherwise skip this and just document using postgres:15-alpine
+      - name: Build and push Database image
+        if: hashFiles('database/Dockerfile') != ''
+        uses: docker/build-push-action@v5
+        with:
+          context: ./database
+          file: ./database/Dockerfile
+          push: true
+          tags: ${{ steps.meta-db.outputs.tags }}
+          labels: ${{ steps.meta-db.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -161,7 +201,7 @@ jobs:
             !dist/**/*.pyc
 
   create-release:
-    needs: [build-and-push-backend, build-frontend-executables]
+    needs: [build-and-push-images, build-frontend-executables]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -180,20 +220,266 @@ jobs:
       - name: Create deployment package
         run: |
           mkdir -p deploy-package
-          cp docker-compose.yml deploy-package/docker-compose.yml
-          cat > deploy-package/.env.example << 'EOF'
-          POSTGRES_USER=cow
-          POSTGRES_PASSWORD=CHANGE_THIS_PASSWORD
-          POSTGRES_DB=cryptoshare
-          SECRET_KEY=CHANGE_THIS_TO_A_LONG_RANDOM_STRING
-          DATABASE_URL=postgresql://cow:CHANGE_THIS_PASSWORD@db:5432/cryptoshare
+          
+          # Create production-ready docker-compose.yml
+          cat > deploy-package/docker-compose.yml << 'EOF'
+          version: '3.8'
+
+          services:
+            db:
+              image: postgres:15-alpine
+              container_name: cryptoshare-db
+              environment:
+                POSTGRES_USER: ${POSTGRES_USER}
+                POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+                POSTGRES_DB: ${POSTGRES_DB}
+              volumes:
+                - postgres_data:/var/lib/postgresql/data
+              networks:
+                - cryptoshare-network
+              restart: unless-stopped
+              healthcheck:
+                test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+                interval: 10s
+                timeout: 5s
+                retries: 5
+
+            backend:
+              image: ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
+              container_name: cryptoshare-backend
+              environment:
+                DATABASE_URL: ${DATABASE_URL}
+                SECRET_KEY: ${SECRET_KEY}
+              ports:
+                - "8000:8000"
+              depends_on:
+                db:
+                  condition: service_healthy
+              networks:
+                - cryptoshare-network
+              restart: unless-stopped
+
+          volumes:
+            postgres_data:
+
+          networks:
+            cryptoshare-network:
+              driver: bridge
           EOF
+          
+          # Create .env.example
+          cat > deploy-package/.env.example << 'EOF'
+          # Database Configuration
+          POSTGRES_USER=cow
+          POSTGRES_PASSWORD=CHANGE_THIS_PASSWORD_TO_SOMETHING_SECURE
+          POSTGRES_DB=cryptoshare
+
+          # Backend Configuration
+          SECRET_KEY=CHANGE_THIS_TO_A_LONG_RANDOM_STRING_USE_openssl_rand_hex_32
+          DATABASE_URL=postgresql://cow:CHANGE_THIS_PASSWORD_TO_SOMETHING_SECURE@db:5432/cryptoshare
+          EOF
+          
+          # Create deployment instructions
+          cat > deploy-package/DEPLOY.md << 'EOF'
+          # CryptoShare Deployment Guide
+
+          ## Quick Start
+
+          ### 1. Download and Extract
+          ```bash
+          # Extract the deployment package
+          tar -xzf cryptoshare-${{ github.ref_name }}-deployment.tar.gz
+          cd deploy-package
+          ```
+
+          ### 2. Configure Environment
+          ```bash
+          # Copy the example environment file
+          cp .env.example .env
+
+          # Edit .env and set secure passwords
+          nano .env  # or use your preferred editor
+          ```
+
+          **Important:** Change these values in `.env`:
+          - `POSTGRES_PASSWORD`: Use a strong, unique password
+          - `SECRET_KEY`: Generate with `openssl rand -hex 32`
+
+          ### 3. Pull Docker Images
+          ```bash
+          # Pull the latest images
+          docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
+          docker pull postgres:15-alpine
+
+          # Or use docker-compose to pull
+          docker-compose pull
+          ```
+
+          ### 4. Start Services
+          ```bash
+          # Start all services
+          docker-compose up -d
+
+          # Check logs
+          docker-compose logs -f
+          ```
+
+          ### 5. Verify Deployment
+          ```bash
+          # Check if services are running
+          docker-compose ps
+
+          # Test the backend
+          curl http://localhost:8000/
+          ```
+
+          ## Docker Commands
+
+          ### Pull Specific Version
+          ```bash
+          docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
+          docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:latest
+          ```
+
+          ### Run Without Docker Compose
+          ```bash
+          # Create network
+          docker network create cryptoshare-network
+
+          # Start database
+          docker run -d \
+            --name cryptoshare-db \
+            --network cryptoshare-network \
+            -e POSTGRES_USER=cow \
+            -e POSTGRES_PASSWORD=your_password \
+            -e POSTGRES_DB=cryptoshare \
+            -v cryptoshare_data:/var/lib/postgresql/data \
+            postgres:15-alpine
+
+          # Start backend
+          docker run -d \
+            --name cryptoshare-backend \
+            --network cryptoshare-network \
+            -p 8000:8000 \
+            -e DATABASE_URL=postgresql://cow:your_password@cryptoshare-db:5432/cryptoshare \
+            -e SECRET_KEY=your_secret_key \
+            ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
+          ```
+
+          ## Desktop Applications
+
+          ### Windows
+          1. Download `SecureShare-Windows.exe` from the release
+          2. Run the executable
+          3. Configure backend URL: `http://localhost:8000`
+
+          ### Linux
+          1. Download `SecureShare-Linux` from the release
+          2. Make it executable: `chmod +x SecureShare-Linux`
+          3. Run: `./SecureShare-Linux`
+          4. Configure backend URL: `http://localhost:8000`
+
+          ## Updating
+
+          ### Update to New Version
+          ```bash
+          # Pull new images
+          docker-compose pull
+
+          # Recreate containers
+          docker-compose up -d
+
+          # Or with specific version
+          docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:v1.0.11
+          docker-compose up -d
+          ```
+
+          ## Troubleshooting
+
+          ### Check Logs
+          ```bash
+          docker-compose logs backend
+          docker-compose logs db
+          ```
+
+          ### Reset Database
+          ```bash
+          docker-compose down -v
+          docker-compose up -d
+          ```
+
+          ### Check Health
+          ```bash
+          docker-compose ps
+          curl http://localhost:8000/health
+          ```
+
+          ## Security Notes
+
+          - Always use strong passwords in production
+          - Generate SECRET_KEY with: `openssl rand -hex 32`
+          - Consider using Docker secrets for sensitive data
+          - Use HTTPS in production with a reverse proxy (nginx/traefik)
+          - Regularly update images for security patches
+
+          ## Support
+
+          For issues and support, visit: https://github.com/${{ github.repository }}
+          EOF
+          
+          # Create the tarball
           tar -czf cryptoshare-${{ github.ref_name }}-deployment.tar.gz deploy-package/
       
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           name: CryptoShare ${{ github.ref_name }}
+          body: |
+            ## 🎉 CryptoShare ${{ github.ref_name }} Release
+            
+            ### Docker Images (Pull from GitHub Container Registry)
+            
+            **Backend:**
+            ```bash
+            docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
+            docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:latest
+            ```
+            
+            **Database:**
+            ```bash
+            docker pull postgres:15-alpine
+            ```
+            
+            ### Quick Deploy
+            
+            1. Download `cryptoshare-${{ github.ref_name }}-deployment.tar.gz`
+            2. Extract and follow instructions in `DEPLOY.md`
+            3. Or use docker-compose:
+            
+            ```bash
+            # Extract deployment package
+            tar -xzf cryptoshare-${{ github.ref_name }}-deployment.tar.gz
+            cd deploy-package
+            
+            # Configure environment
+            cp .env.example .env
+            # Edit .env with your secure passwords
+            
+            # Start services
+            docker-compose up -d
+            ```
+            
+            ### Desktop Applications
+            
+            - **Windows**: Download `SecureShare-Windows.exe`
+            - **Linux**: Download `SecureShare-Linux`
+            
+            ### Package Registry
+            
+            View all packages at: https://github.com/${{ github.repository_owner }}?tab=packages&repo_name=${{ github.event.repository.name }}
+            
+            ---
+            
           generate_release_notes: true
           files: |
             cryptoshare-${{ github.ref_name }}-deployment.tar.gz
@@ -201,26 +487,63 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Create deployment instructions comment
-        if: github.event_name == 'push'
+      - name: Create deployment summary
         uses: actions/github-script@v7
         with:
           script: |
             const tag = context.ref.replace('refs/tags/', '');
-            const message = `
-            ## 🎉 Release ${tag} Published!
+            const repoOwner = context.repo.owner;
+            const repoName = context.repo.repo;
             
-            ### Docker Backend
+            const message = `
+            ## 🎉 Release ${tag} Published Successfully!
+            
+            ### 📦 Docker Images Available
+            
+            **Backend Image:**
             \`\`\`bash
-            docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${tag}
-            docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:latest
+            docker pull ghcr.io/${repoOwner}/cryptoshare-backend:${tag}
+            docker pull ghcr.io/${repoOwner}/cryptoshare-backend:latest
             \`\`\`
             
-            ### Desktop Apps
-            - Windows: Download \`SecureShare-Windows.exe\`
-            - Linux: Download \`SecureShare-Linux\`
+            **Database Image:**
+            \`\`\`bash
+            docker pull postgres:15-alpine
+            \`\`\`
             
-            [View Release](https://github.com/${{ github.repository }}/releases/tag/${tag})
+            ### 🚀 Quick Start
+            
+            \`\`\`bash
+            # Download deployment package
+            wget https://github.com/${repoOwner}/${repoName}/releases/download/${tag}/cryptoshare-${tag}-deployment.tar.gz
+            
+            # Extract and deploy
+            tar -xzf cryptoshare-${tag}-deployment.tar.gz
+            cd deploy-package
+            cp .env.example .env
+            # Edit .env with secure passwords
+            docker-compose up -d
+            \`\`\`
+            
+            ### 🖥️ Desktop Applications
+            
+            - **Windows**: [Download SecureShare-Windows.exe](https://github.com/${repoOwner}/${repoName}/releases/download/${tag}/SecureShare-Windows.exe)
+            - **Linux**: [Download SecureShare-Linux](https://github.com/${repoOwner}/${repoName}/releases/download/${tag}/SecureShare-Linux)
+            
+            ### 📚 Documentation
+            
+            Full deployment instructions included in the deployment package (DEPLOY.md)
+            
+            ### 🔗 Links
+            
+            - [Release Page](https://github.com/${repoOwner}/${repoName}/releases/tag/${tag})
+            - [Package Registry](https://github.com/${repoOwner}?tab=packages&repo_name=${repoName})
+            - [Repository](https://github.com/${repoOwner}/${repoName})
             `;
             
-            core.summary.addHeading('Release Created Successfully').addRaw(message).write()
+            await core.summary
+              .addHeading('✅ Release Created Successfully', 2)
+              .addRaw(message)
+              .write();
+            
+            console.log('Release summary created');
