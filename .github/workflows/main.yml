@@ -95,7 +95,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Extract metadata for Backend
         id: meta
@@ -108,6 +108,12 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=CryptoShare Backend
+            org.opencontainers.image.description=Secure file sharing backend with encryption
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
       
       - name: Build and push Backend image
         uses: docker/build-push-action@v5
@@ -131,9 +137,11 @@ jobs:
           - os: ubuntu-latest
             artifact_name: SecureShare-Linux
             build_command: pyinstaller --onefile --name SecureShare gui/app.py
+            output_file: SecureShare
           - os: windows-latest
-            artifact_name: SecureShare-Windows.exe
+            artifact_name: SecureShare-Windows
             build_command: pyinstaller --onefile --windowed --name SecureShare gui/app.py
+            output_file: SecureShare.exe
     
     steps:
       - name: Checkout code
@@ -156,12 +164,89 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.output_file }}
+
+  package-gui-source:
+    needs: security-and-tests
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Create GUI source package
+        run: |
+          mkdir -p gui-source-package/SecureShare-GUI
+          
+          # Copy GUI files
+          cp -r gui/* gui-source-package/SecureShare-GUI/
+          
+          # Copy backend requirements for reference
+          mkdir -p gui-source-package/SecureShare-GUI/backend-reference
+          cp backend/requirements.txt gui-source-package/SecureShare-GUI/backend-reference/
+          
+          # Create README for GUI source
+          cat > gui-source-package/SecureShare-GUI/README.md << 'EOF'
+          # CryptoShare GUI - Source Code
+          
+          This is the Python source code for the CryptoShare desktop GUI client.
+          
+          ## Requirements
+          
+          - Python 3.11 or higher
+          - Backend server running (see deployment package)
+          
+          ## Installation
+          
+          ```bash
+          # Install dependencies
+          pip install -r requirements.txt
+          
+          # Run the GUI
+          python app.py
+          ```
+          
+          ## Configuration
+          
+          On first run, configure the backend URL (default: http://localhost:8000)
+          
+          ## Building Executable
+          
+          ### Windows
+          ```bash
+          pip install pyinstaller
+          pyinstaller --onefile --windowed --name SecureShare app.py
+          ```
+          
+          ### Linux
+          ```bash
+          pip install pyinstaller
+          pyinstaller --onefile --name SecureShare app.py
+          ```
+          
+          The executable will be created in the `dist/` folder.
+          
+          ## Support
+          
+          For issues, visit: https://github.com/${{ github.repository }}/issues
+          EOF
+          
+          # Create archive
+          cd gui-source-package
+          tar -czf SecureShare-GUI-Source-${{ github.ref_name }}.tar.gz SecureShare-GUI/
+          zip -r SecureShare-GUI-Source-${{ github.ref_name }}.zip SecureShare-GUI/
+      
+      - name: Upload GUI source artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GUI-Source
           path: |
-            dist/SecureShare*
-            !dist/**/*.pyc
+            gui-source-package/*.tar.gz
+            gui-source-package/*.zip
 
   create-release:
-    needs: [build-and-push-backend, build-frontend-executables]
+    needs: [build-and-push-backend, build-frontend-executables, package-gui-source]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -176,6 +261,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: ./release-assets
+      
+      - name: List downloaded artifacts
+        run: |
+          echo "=== Downloaded Artifacts ==="
+          find release-assets -type f
       
       - name: Create deployment package
         run: |
@@ -196,11 +286,11 @@ jobs:
           DATABASE_URL=postgresql://cow:CHANGE_THIS_PASSWORD@db:5432/cryptoshare
           EOF
           
-          # Create README
+          # Create comprehensive deployment README
           cat > deploy-package/README.md << 'EOF'
           # CryptoShare Deployment Guide
           
-          ## Quick Start
+          ## 🚀 Quick Start (Docker)
           
           ### 1. Pull the Docker images
           ```bash
@@ -212,7 +302,12 @@ jobs:
           ```bash
           cp .env.example .env
           # Edit .env and change POSTGRES_PASSWORD and SECRET_KEY
+          nano .env
           ```
+          
+          **IMPORTANT**: Change these values:
+          - `POSTGRES_PASSWORD`: Use a strong password
+          - `SECRET_KEY`: Generate with `openssl rand -hex 32`
           
           ### 3. Update docker-compose.yml
           Edit docker-compose.yml and change the backend image to:
@@ -224,37 +319,131 @@ jobs:
           ### 4. Start services
           ```bash
           docker-compose up -d
+          
+          # Check logs
+          docker-compose logs -f
+          
+          # Verify services are running
+          docker-compose ps
           ```
           
-          ### 5. Run the GUI client
+          ### 5. Access the application
+          - Backend API: http://localhost:8000
+          - API Documentation: http://localhost:8000/docs
           
-          **Option A: Download pre-built executable**
-          - Windows: Run `SecureShare-Windows.exe`
-          - Linux: Run `SecureShare-Linux` (chmod +x first)
+          ---
           
-          **Option B: Run from source**
+          ## 🖥️ GUI Client Setup
+          
+          ### Option A: Use Pre-built Executable (Recommended)
+          
+          **Windows:**
+          1. Download `SecureShare.exe` from the release
+          2. Run the executable
+          3. Configure backend URL: `http://localhost:8000` (or your server IP)
+          
+          **Linux:**
+          1. Download `SecureShare` from the release
+          2. Make it executable: `chmod +x SecureShare`
+          3. Run: `./SecureShare`
+          4. Configure backend URL: `http://localhost:8000` (or your server IP)
+          
+          ### Option B: Run from Source
+          
+          1. Download `SecureShare-GUI-Source-${{ github.ref_name }}.tar.gz` or `.zip`
+          2. Extract the archive
+          3. Install dependencies:
           ```bash
-          cd gui
+          cd SecureShare-GUI
           pip install -r requirements.txt
+          ```
+          4. Run the GUI:
+          ```bash
           python app.py
           ```
           
-          ## Default Configuration
-          - Backend API: http://localhost:8000
-          - Database: PostgreSQL on port 5432
+          ---
           
-          ## Security Notes
-          - Change default passwords in .env
-          - Use a strong SECRET_KEY (50+ characters)
-          - Enable HTTPS in production
-          - Regular database backups recommended
+          ## 📦 What's Included in This Release
           
-          ## Support
-          Report issues at: https://github.com/${{ github.repository }}/issues
+          - **Docker Backend**: Production-ready containerized backend
+          - **Windows Executable**: `SecureShare.exe` - No installation required
+          - **Linux Executable**: `SecureShare` - Single binary file
+          - **GUI Source Code**: Full Python source for customization
+          - **Docker Compose**: Easy deployment configuration
+          
+          ---
+          
+          ## 🔒 Security Notes
+          
+          - ✅ Change default passwords in .env
+          - ✅ Use a strong SECRET_KEY (50+ characters)
+          - ✅ Enable HTTPS in production (use nginx/traefik)
+          - ✅ Regular database backups recommended
+          - ✅ Keep Docker images updated
+          
+          ---
+          
+          ## 🛠️ Troubleshooting
+          
+          ### Backend won't start
+          ```bash
+          # Check logs
+          docker-compose logs backend
+          
+          # Restart services
+          docker-compose restart
+          ```
+          
+          ### GUI can't connect to backend
+          1. Verify backend is running: `curl http://localhost:8000`
+          2. Check firewall settings
+          3. Verify backend URL in GUI settings
+          
+          ### Database issues
+          ```bash
+          # Reset database (WARNING: deletes all data)
+          docker-compose down -v
+          docker-compose up -d
+          ```
+          
+          ---
+          
+          ## 📚 Support
+          
+          - Report issues: https://github.com/${{ github.repository }}/issues
+          - Documentation: See repository README
           EOF
           
           # Create archive
           tar -czf cryptoshare-${{ github.ref_name }}-deployment.tar.gz deploy-package/
+      
+      - name: Prepare release files
+        run: |
+          mkdir -p final-release
+          
+          # Copy deployment package
+          cp cryptoshare-${{ github.ref_name }}-deployment.tar.gz final-release/
+          
+          # Copy Windows executable
+          if [ -f release-assets/SecureShare-Windows/SecureShare.exe ]; then
+            cp release-assets/SecureShare-Windows/SecureShare.exe final-release/SecureShare-Windows.exe
+          fi
+          
+          # Copy Linux executable
+          if [ -f release-assets/SecureShare-Linux/SecureShare ]; then
+            cp release-assets/SecureShare-Linux/SecureShare final-release/SecureShare-Linux
+          fi
+          
+          # Copy GUI source packages
+          if [ -d release-assets/GUI-Source ]; then
+            cp release-assets/GUI-Source/*.tar.gz final-release/ || true
+            cp release-assets/GUI-Source/*.zip final-release/ || true
+          fi
+          
+          # List final files
+          echo "=== Final Release Files ==="
+          ls -lh final-release/
       
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
@@ -263,23 +452,38 @@ jobs:
           body: |
             ## 🎉 CryptoShare Release ${{ github.ref_name }}
             
-            ### 📦 What's Included
+            ### 📦 Release Assets
             
-            #### Docker Backend Image
-            - **Backend API**: `ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}`
-            - **Database**: PostgreSQL 15 Alpine (official image)
+            #### 🐳 Docker Images
+            ```bash
+            # Backend API
+            docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
+            docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:latest
             
-            #### Desktop Applications
-            - **Windows**: `SecureShare-Windows.exe`
-            - **Linux**: `SecureShare-Linux`
+            # Database (Official PostgreSQL)
+            docker pull postgres:15-alpine
+            ```
             
-            #### Deployment Package
-            - `cryptoshare-${{ github.ref_name }}-deployment.tar.gz` - Complete deployment files
+            #### 🖥️ Desktop Applications
+            
+            | Platform | File | Description |
+            |----------|------|-------------|
+            | Windows | `SecureShare-Windows.exe` | Single executable, no installation needed |
+            | Linux | `SecureShare-Linux` | Single binary, make executable with `chmod +x` |
+            
+            #### 📄 Source Code & Deployment
+            
+            | Package | Description |
+            |---------|-------------|
+            | `cryptoshare-${{ github.ref_name }}-deployment.tar.gz` | Complete deployment package with docker-compose |
+            | `SecureShare-GUI-Source-${{ github.ref_name }}.tar.gz` | GUI source code (tarball) |
+            | `SecureShare-GUI-Source-${{ github.ref_name }}.zip` | GUI source code (zip) |
             
             ---
             
-            ### 🚀 Quick Deploy
+            ### 🚀 Quick Deploy Guide
             
+            #### For Servers (Docker):
             ```bash
             # 1. Pull backend image
             docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
@@ -289,53 +493,86 @@ jobs:
             tar -xzf cryptoshare-${{ github.ref_name }}-deployment.tar.gz
             cd deploy-package
             
-            # 3. Configure (IMPORTANT!)
+            # 3. Configure environment
             cp .env.example .env
-            nano .env  # Change passwords and secret key!
+            nano .env  # Change POSTGRES_PASSWORD and SECRET_KEY
             
-            # 4. Update docker-compose.yml backend image to:
-            #    image: ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
+            # 4. Update docker-compose.yml backend image
+            # Change to: ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
             
             # 5. Start services
             docker-compose up -d
+            ```
             
-            # 6. Download and run GUI client for your OS
+            #### For Desktop Users:
+            
+            **Windows:**
+            1. Download `SecureShare-Windows.exe`
+            2. Run the executable
+            3. Enter backend URL (e.g., `http://localhost:8000`)
+            
+            **Linux:**
+            1. Download `SecureShare-Linux`
+            2. Make executable: `chmod +x SecureShare-Linux`
+            3. Run: `./SecureShare-Linux`
+            4. Enter backend URL (e.g., `http://localhost:8000`)
+            
+            #### Run GUI from Source:
+            ```bash
+            # Download and extract
+            tar -xzf SecureShare-GUI-Source-${{ github.ref_name }}.tar.gz
+            cd SecureShare-GUI
+            
+            # Install dependencies
+            pip install -r requirements.txt
+            
+            # Run
+            python app.py
             ```
             
             ---
             
-            ### 📋 Full Changelog
+            ### 📋 What's New in This Release
             
           generate_release_notes: true
           files: |
-            cryptoshare-${{ github.ref_name }}-deployment.tar.gz
-            release-assets/**/*
+            final-release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Create deployment instructions comment
+      - name: Create deployment summary
         if: github.event_name == 'push'
         uses: actions/github-script@v7
         with:
           script: |
             const tag = context.ref.replace('refs/tags/', '');
             const message = `
-            ## 🎉 Release ${tag} Published!
+            ## 🎉 Release ${tag} Published Successfully!
             
-            ### Docker Backend
+            ### 📦 Available Downloads
+            
+            #### Docker Images
             \`\`\`bash
             docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${tag}
+            docker pull ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:latest
             \`\`\`
             
-            ### Desktop Apps
-            - Windows: Download \`SecureShare-Windows.exe\`
-            - Linux: Download \`SecureShare-Linux\`
+            #### Desktop Applications
+            - **Windows**: \`SecureShare-Windows.exe\`
+            - **Linux**: \`SecureShare-Linux\`
             
-            [View Release](https://github.com/${{ github.repository }}/releases/tag/${tag})
+            #### Source Code
+            - **GUI Source**: \`SecureShare-GUI-Source-${tag}.tar.gz\` or \`.zip\`
+            - **Deployment Package**: \`cryptoshare-${tag}-deployment.tar.gz\`
+            
+            ### 🔗 Links
+            - [Release Page](https://github.com/${{ github.repository }}/releases/tag/${tag})
+            - [Package Registry](https://github.com/${{ github.repository_owner }}?tab=packages)
             `;
             
-            // This will show in the Actions summary
-            core.summary
-              .addHeading('Release Created Successfully')
+            await core.summary
+              .addHeading('✅ Release Created Successfully', 2)
               .addRaw(message)
               .write();
+            
+            console.log('Release summary created');
