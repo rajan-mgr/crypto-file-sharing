@@ -408,59 +408,100 @@ class SecureShareApp:
 
         # Fetch and display certificate info
         try:
-            # Get public key
+            # Get certificate from PKI endpoint
             r = requests.get(
-                f"{self.system.api_base}/users/me/public-key",
+                f"{self.system.api_base}/users/me/certificate",
                 headers=self.system._headers(),
                 timeout=8
             )
             r.raise_for_status()
-            public_key_pem = r.json()["public_key_pem"]
+            cert_data = r.json()
+            
+            certificate_pem = cert_data.get("certificate_pem", "")
+            cert_serial = cert_data.get("serial", "N/A")
+            not_after = cert_data.get("not_after", "N/A")
+            is_revoked = cert_data.get("is_revoked", False)
+            details = cert_data.get("details", {})
 
-            # Extract first and last few lines of public key
-            key_lines = public_key_pem.strip().split('\n')
-            if len(key_lines) > 6:
+            # Extract first and last few lines of certificate
+            cert_lines = certificate_pem.strip().split('\n') if certificate_pem else []
+            if len(cert_lines) > 10:
                 # Show first 3 lines, ..., last 3 lines
-                key_preview = '\n'.join(key_lines[:3]) + '\n... [key data truncated] ...\n' + '\n'.join(key_lines[-3:])
+                cert_preview = '\n'.join(cert_lines[:3]) + '\n... [certificate data truncated] ...\n' + '\n'.join(cert_lines[-3:])
             else:
-                key_preview = public_key_pem
+                cert_preview = certificate_pem
+            
+            # Get certificate status and formatting
+            status_emoji = "⚠️ REVOKED" if is_revoked else "✅ ACTIVE"
+            status_color = "red" if is_revoked else "green"
+            
+            # Extract subject info from details
+            subject_info = details.get("subject", {})
+            cn = subject_info.get("commonName", self.system.current_user)
+            org = subject_info.get("organizationName", "SecureShare")
+            
+            issuer = details.get("issuer", "CN=SecureShare Root CA")
+            signature_algo = details.get("signature_algorithm", "sha256WithRSAEncryption")
             
             # Build certificate display
             cert_info = f"""╔═══════════════════════════════════════════════════════════════╗
-║                    CRYPTOSHARE CERTIFICATE                    ║
+║                  X.509 DIGITAL CERTIFICATE                    ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-┌─────────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────┐
+│ CERTIFICATE STATUS                                              │
+└───────────────────────────────────────────────────────────────┘
+
+  Status:               {status_emoji}
+  Serial Number:        {cert_serial}
+  Expiry Date:          {not_after[:10] if not_after != "N/A" else "N/A"}
+
+┌───────────────────────────────────────────────────────────────┐
 │ SUBJECT INFORMATION                                             │
-└─────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────┘
 
-  Username (CN):        {self.system.current_user}
-  Issuer:               SecureShare Certificate Authority
-  Status:               Active
+  Common Name (CN):     {cn}
+  Organization (O):     {org}
   
-┌─────────────────────────────────────────────────────────────────┐
-│ PUBLIC KEY (RSA 2048-bit)                                       │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│ ISSUER INFORMATION                                              │
+└───────────────────────────────────────────────────────────────┘
 
-{key_preview}
+  Issuer:               {issuer}
+  Signature Algorithm:  {signature_algo}
+  
+┌───────────────────────────────────────────────────────────────┐
+│ CERTIFICATE (X.509 PEM FORMAT)                                  │
+└───────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────┐
-│ PRIVATE KEY                                                     │
-└─────────────────────────────────────────────────────────────────┘
+{cert_preview}
+
+┌───────────────────────────────────────────────────────────────┐
+│ PRIVATE KEY PROTECTION                                          │
+└───────────────────────────────────────────────────────────────┘
 
   Status:               Encrypted with user password
-  Algorithm:            Fernet (AES-128-CBC)
+  Encryption:           Fernet (AES-128-CBC)
   Key Derivation:       Scrypt (N=16384, r=8, p=1)
-  Storage:              Secure database storage
+  Storage:              Secure database (encrypted)
   
-┌─────────────────────────────────────────────────────────────────┐
-│ SECURITY NOTES                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│ KEY USAGE                                                       │
+└───────────────────────────────────────────────────────────────┘
 
-  • Your private key is encrypted with your password
-  • Private key never leaves the server unencrypted
-  • Public key is shared with other users for encryption
-  • Only you can decrypt files shared with you
+  • Digital Signature    - Sign files and messages
+  • Key Encipherment     - Encrypt symmetric keys
+  • Non-Repudiation      - Prove file authorship
+  
+┌───────────────────────────────────────────────────────────────┐
+│ SECURITY NOTES                                                  │
+└───────────────────────────────────────────────────────────────┘
+
+  • Certificate issued by trusted CA
+  • Public key extracted from certificate
+  • Private key never leaves server unencrypted
+  • Certificate validated on every login
+  • Revocation checked via CRL
   • Keep your password secure - it cannot be recovered
 
 ╔═══════════════════════════════════════════════════════════════╗
