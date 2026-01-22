@@ -41,11 +41,9 @@ jobs:
       CA_CERT_PATH: ./pki/ca.crt
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -55,17 +53,16 @@ jobs:
           pip install -r backend/requirements.txt
           pip install requests cryptography bandit pylint
 
-      - name: Run Bandit (Security Scan)
+      - name: Run Bandit
         run: bandit -r backend -ll || true
 
-      - name: Run Pylint (Code Quality)
+      - name: Run Pylint
         run: pylint backend/*.py || true
 
-      - name: Setup Certificate Authority (PKI)
+      - name: Setup Certificate Authority
         run: |
           cd backend
           python setup_ca.py
-          ls -lh pki/
 
       - name: Start Backend
         run: |
@@ -74,7 +71,7 @@ jobs:
           sleep 10
           curl http://127.0.0.1:8000/ || exit 1
 
-      - name: Run PKI Test Suite
+      - name: Run Test Suite
         run: python test_app.py
 
 # =========================================================
@@ -91,18 +88,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT }}
 
-      - name: Build & Push Backend Image
-        uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v5
         with:
           context: ./backend
           file: ./backend/Dockerfile
@@ -112,9 +106,9 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:latest
 
 # =========================================================
-# 3️⃣ BUILD GUI EXECUTABLES (WIN + LINUX)
+# 3️⃣ BUILD GUI EXECUTABLES (SPEC FILE – STABLE)
 # =========================================================
-  build-gui:
+  build-frontend-executables:
     needs: backend-tests
     runs-on: ${{ matrix.os }}
     if: startsWith(github.ref, 'refs/tags/')
@@ -122,17 +116,16 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: SecureShare-Linux
-            sep: ":"
+            artifact_name: SecureShare-Linux
+            output_file: SecureShare
           - os: windows-latest
-            artifact: SecureShare-Windows.exe
-            sep: ";"
+            artifact_name: SecureShare-Windows
+            output_file: SecureShare.exe
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -141,26 +134,98 @@ jobs:
           pip install -r gui/requirements.txt
           pip install pyinstaller
 
-      - name: Build GUI executable
+      - name: Create PyInstaller spec file
         shell: bash
         run: |
           cd gui
-          pyinstaller --onefile \
-            --add-data "secure_share.py${{ matrix.sep }}." \
-            --hidden-import=secure_share \
-            app.py
+          cat > SecureShare.spec << 'EOF'
+          # -*- mode: python ; coding: utf-8 -*-
 
-      - name: Upload GUI artifact
+          block_cipher = None
+
+          a = Analysis(
+              ['app.py'],
+              pathex=['.'],
+              binaries=[],
+              datas=[('secure_share.py', '.')],
+              hiddenimports=[
+                  'secure_share',
+                  'cryptography',
+                  'cryptography.fernet',
+                  'cryptography.hazmat',
+                  'cryptography.hazmat.primitives',
+                  'cryptography.hazmat.backends',
+                  'requests',
+                  'tkinter',
+                  'tkinter.ttk',
+                  'tkinter.messagebox',
+                  'tkinter.filedialog',
+                  'tkinter.scrolledtext',
+              ],
+              hookspath=[],
+              hooksconfig={},
+              runtime_hooks=[],
+              excludes=[],
+              cipher=block_cipher,
+              noarchive=False,
+          )
+
+          pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+          exe = EXE(
+              pyz,
+              a.scripts,
+              a.binaries,
+              a.zipfiles,
+              a.datas,
+              [],
+              name='SecureShare',
+              console=False,
+          )
+          EOF
+
+      - name: Build executable
+        shell: bash
+        run: |
+          cd gui
+          pyinstaller SecureShare.spec
+
+      - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: gui/dist/*
+          name: ${{ matrix.artifact_name }}
+          path: gui/dist/${{ matrix.output_file }}
 
 # =========================================================
-# 4️⃣ CREATE RELEASE PACKAGE
+# 4️⃣ PACKAGE GUI SOURCE
+# =========================================================
+  package-gui-source:
+    needs: backend-tests
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package GUI source
+        run: |
+          mkdir -p gui-source/SecureShare-GUI
+          cp -r gui/* gui-source/SecureShare-GUI/
+
+          cd gui-source
+          tar -czf SecureShare-GUI-Source-${{ github.ref_name }}.tar.gz SecureShare-GUI
+          zip -r SecureShare-GUI-Source-${{ github.ref_name }}.zip SecureShare-GUI
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GUI-Source
+          path: gui-source/*
+
+# =========================================================
+# 5️⃣ CREATE RELEASE
 # =========================================================
   create-release:
-    needs: [build-backend, build-gui]
+    needs: [build-backend, build-frontend-executables, package-gui-source]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -169,32 +234,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: release-assets
 
-      - name: Create backend + DB deployment package
+      - name: Create deployment package
         run: |
-          mkdir -p deploy-package
-          cp docker-compose.yml deploy-package/
-          
-          cat > deploy-package/.env.example << 'EOF'
-          POSTGRES_USER=cow
-          POSTGRES_PASSWORD=CHANGE_ME
-          POSTGRES_DB=cryptoshare
-          SECRET_KEY=CHANGE_TO_RANDOM_50_CHARS
-          DATABASE_URL=postgresql://cow:CHANGE_ME@db:5432/cryptoshare
-          EOF
+          mkdir deploy
+          cp docker-compose.yml deploy/
+          tar -czf cryptoshare-deploy-${{ github.ref_name }}.tar.gz deploy
 
-          tar -czf cryptoshare-backend-${{ github.ref_name }}.tar.gz deploy-package/
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v1
         with:
           name: SecureShare ${{ github.ref_name }}
           files: |
-            cryptoshare-backend-${{ github.ref_name }}.tar.gz
+            cryptoshare-deploy-${{ github.ref_name }}.tar.gz
             release-assets/**
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
