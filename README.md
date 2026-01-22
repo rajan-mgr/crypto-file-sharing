@@ -278,4 +278,4 @@ For issues, questions, or feature requests, please:
 
 ---
 
-**Made with 🔐 by the SecureShare Team**
+**Made with 🔐 by Rajan Magar**
