@@ -1,5 +1,8 @@
-To run this from docker:
-since it a gui. Use the following commands:
-1.xhost +local:docker
+git clone https://github.com/rajan-mgr/crypto-file-sharing.git
 
-2.docker run -it --rm --env-file .env -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix ghcr.io/<image name or id>
+
+run backend:
+
+
+run frontend:
+  python3 gui/app.py
