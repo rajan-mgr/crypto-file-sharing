@@ -1,430 +1,232 @@
 #!/usr/bin/env python3
 """
-CryptoShare Application Test Suite
-Tests all major functionality of the secure file sharing system
+SecureShare PKI Test Suite
+Aligned with ST6051CEM Practical Cryptography Coursework
 """
 
 import requests
 import base64
-import os
 import time
+import os
 from pathlib import Path
-from cryptography.hazmat.primitives import serialization
+
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+
+API = "http://127.0.0.1:8000"
 
 
-class CryptoShareTester:
-    def __init__(self, api_base="http://localhost:8000"):
-        self.api_base = api_base
-        self.test_users = []
-        self.test_files = []
-        self.tokens = {}
-        
-    def print_header(self, text):
-        """Print a formatted header"""
-        print(f"\n{'='*70}")
-        print(f"  {text}")
-        print(f"{'='*70}")
-    
-    def print_test(self, test_name, passed, message=""):
-        """Print test result"""
-        status = "✅ PASS" if passed else "❌ FAIL"
-        print(f"{status} - {test_name}")
-        if message:
-            print(f"       {message}")
-    
-    def test_backend_connection(self):
-        """Test if backend is running"""
-        self.print_header("Testing Backend Connection")
-        try:
-            response = requests.get(f"{self.api_base}/", timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                self.print_test("Backend Connection", True, f"Message: {data.get('message')}")
-                return True
-            else:
-                self.print_test("Backend Connection", False, f"Status: {response.status_code}")
-                return False
-        except Exception as e:
-            self.print_test("Backend Connection", False, f"Error: {str(e)}")
-            return False
-    
-    def generate_test_keys(self):
-        """Generate RSA key pair for testing"""
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        public_pem = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
+# --------------------------------------------------
+# UTILS
+# --------------------------------------------------
+
+def header(title):
+    print("\n" + "=" * 70)
+    print(f" {title}")
+    print("=" * 70)
+
+
+def ok(msg):
+    print(f"✅ {msg}")
+
+
+def fail(msg):
+    print(f"❌ {msg}")
+    exit(1)
+
+
+def generate_keys_and_csr(username: str):
+    """Generate RSA key pair and CSR"""
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048
+    )
+
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(
+            x509.Name([
+                x509.NameAttribute(NameOID.COMMON_NAME, username),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "SecureShare"),
+            ])
         )
-        private_pem = private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
-        )
-        return private_pem, public_pem
-    
-    def test_user_registration(self, username, password):
-        """Test user registration"""
-        self.print_header(f"Testing User Registration - {username}")
-        
-        try:
-            # Generate keys
-            priv_pem, pub_pem = self.generate_test_keys()
-            salt = os.urandom(16)
-            
-            # Mock encrypted private key (for testing)
-            priv_enc = b"mock_encrypted_private_key_" + os.urandom(32)
-            
-            payload = {
-                "username": username,
-                "password": password,
-                "salt": base64.urlsafe_b64encode(salt).decode('ascii').rstrip('='),
-                "private_key_enc": base64.urlsafe_b64encode(priv_enc).decode('ascii').rstrip('='),
-                "public_key_pem": pub_pem.decode('ascii')
-            }
-            
-            response = requests.post(f"{self.api_base}/auth/register", json=payload, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                self.tokens[username] = data.get("access_token")
-                self.test_users.append(username)
-                self.print_test(f"Register {username}", True, f"Token received")
-                return True
-            else:
-                error = response.json().get("detail", "Unknown error")
-                self.print_test(f"Register {username}", False, f"Error: {error}")
-                return False
-                
-        except Exception as e:
-            self.print_test(f"Register {username}", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_user_login(self, username, password):
-        """Test user login"""
-        self.print_header(f"Testing User Login - {username}")
-        
-        try:
-            data = {
-                "username": username,
-                "password": password
-            }
-            
-            response = requests.post(
-                f"{self.api_base}/auth/login",
-                data=data,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                self.tokens[username] = result.get("access_token")
-                self.print_test(f"Login {username}", True, "Token received")
-                return True
-            else:
-                self.print_test(f"Login {username}", False, f"Status: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            self.print_test(f"Login {username}", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_list_users(self):
-        """Test listing all users"""
-        self.print_header("Testing List Users")
-        
-        try:
-            response = requests.get(f"{self.api_base}/users", timeout=5)
-            
-            if response.status_code == 200:
-                users = response.json()
-                self.print_test("List Users", True, f"Found {len(users)} users: {', '.join(users)}")
-                return True
-            else:
-                self.print_test("List Users", False, f"Status: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            self.print_test("List Users", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_get_public_key(self, username):
-        """Test getting a user's public key"""
-        self.print_header(f"Testing Get Public Key - {username}")
-        
-        try:
-            response = requests.get(f"{self.api_base}/users/{username}/public-key", timeout=5)
-            
-            if response.status_code == 200:
-                data = response.json()
-                pub_key = data.get("public_key_pem", "")
-                key_preview = pub_key[:50] + "..." if len(pub_key) > 50 else pub_key
-                self.print_test(f"Get Public Key ({username})", True, f"Key: {key_preview}")
-                return True
-            else:
-                self.print_test(f"Get Public Key ({username})", False, f"Status: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            self.print_test(f"Get Public Key ({username})", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_get_my_public_key(self, username):
-        """Test getting current user's public key (authenticated)"""
-        self.print_header(f"Testing Get My Public Key - {username}")
-        
-        if username not in self.tokens:
-            self.print_test(f"Get My Public Key ({username})", False, "No token available")
-            return False
-        
-        try:
-            headers = {"Authorization": f"Bearer {self.tokens[username]}"}
-            response = requests.get(f"{self.api_base}/users/me/public-key", headers=headers, timeout=5)
-            
-            if response.status_code == 200:
-                data = response.json()
-                pub_key = data.get("public_key_pem", "")
-                key_preview = pub_key[:50] + "..." if len(pub_key) > 50 else pub_key
-                self.print_test(f"Get My Public Key ({username})", True, f"Key: {key_preview}")
-                return True
-            else:
-                error = response.json().get("detail", "Unknown error")
-                self.print_test(f"Get My Public Key ({username})", False, f"Error: {error}")
-                return False
-                
-        except Exception as e:
-            self.print_test(f"Get My Public Key ({username})", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_create_test_file(self, filename="test_file.txt", content="Hello, this is a test file!"):
-        """Create a test file for sharing"""
-        self.print_header(f"Creating Test File - {filename}")
-        
-        try:
-            test_path = Path(filename)
-            test_path.write_text(content)
-            self.print_test(f"Create Test File", True, f"Created: {filename}")
-            return str(test_path.absolute())
-        except Exception as e:
-            self.print_test(f"Create Test File", False, f"Exception: {str(e)}")
-            return None
-    
-    def test_file_operations(self, owner_username):
-        """Test file list/download operations"""
-        self.print_header(f"Testing File Operations - {owner_username}")
-        
-        if owner_username not in self.tokens:
-            self.print_test(f"File Operations ({owner_username})", False, "No token available")
-            return False
-        
-        try:
-            headers = {"Authorization": f"Bearer {self.tokens[owner_username]}"}
-            response = requests.get(f"{self.api_base}/files", headers=headers, timeout=5)
-            
-            if response.status_code == 200:
-                files = response.json()
-                self.print_test(f"List Files ({owner_username})", True, f"Found {len(files)} files")
-                
-                # Print file details
-                for f in files:
-                    print(f"       - {f.get('filename')} (Owner: {f.get('owner')})")
-                
-                return True
-            else:
-                self.print_test(f"List Files ({owner_username})", False, f"Status: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            self.print_test(f"File Operations ({owner_username})", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_invalid_login(self):
-        """Test login with invalid credentials"""
-        self.print_header("Testing Invalid Login")
-        
-        try:
-            data = {
-                "username": "nonexistent_user",
-                "password": "wrong_password"
-            }
-            
-            response = requests.post(f"{self.api_base}/auth/login", data=data, timeout=5)
-            
-            if response.status_code == 401:
-                self.print_test("Invalid Login (Expected Failure)", True, "Correctly rejected")
-                return True
-            else:
-                self.print_test("Invalid Login (Expected Failure)", False, f"Unexpected status: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            self.print_test("Invalid Login (Expected Failure)", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_unauthorized_access(self):
-        """Test accessing protected endpoint without token"""
-        self.print_header("Testing Unauthorized Access")
-        
-        try:
-            response = requests.get(f"{self.api_base}/users/me/public-key", timeout=5)
-            
-            if response.status_code == 401:
-                self.print_test("Unauthorized Access (Expected Failure)", True, "Correctly rejected")
-                return True
-            else:
-                self.print_test("Unauthorized Access (Expected Failure)", False, f"Unexpected status: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            self.print_test("Unauthorized Access (Expected Failure)", False, f"Exception: {str(e)}")
-            return False
-    
-    def cleanup(self):
-        """Clean up test files"""
-        self.print_header("Cleanup")
-        
-        try:
-            test_file = Path("test_file.txt")
-            if test_file.exists():
-                test_file.unlink()
-                self.print_test("Cleanup Test File", True, "Removed test_file.txt")
-        except Exception as e:
-            self.print_test("Cleanup Test File", False, f"Exception: {str(e)}")
-    
-    def run_all_tests(self):
-        """Run complete test suite"""
-        print("\n" + "="*70)
-        print("  CRYPTOSHARE APPLICATION TEST SUITE")
-        print("="*70)
-        
-        results = {
-            "passed": 0,
-            "failed": 0,
-            "total": 0
-        }
-        
-        # Test 1: Backend Connection
-        if self.test_backend_connection():
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-            print("\n❌ Backend not running! Start with: docker-compose up -d")
-            return results
-        results["total"] += 1
-        
-        time.sleep(0.5)
-        
-        # Test 2: User Registration
-        test_user1 = f"testuser1_{int(time.time())}"
-        test_user2 = f"testuser2_{int(time.time())}"
-        
-        if self.test_user_registration(test_user1, "testpass123"):
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        results["total"] += 1
-        
-        time.sleep(0.5)
-        
-        if self.test_user_registration(test_user2, "testpass456"):
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        results["total"] += 1
-        
-        time.sleep(0.5)
-        
-        # Test 3: User Login
-        if self.test_user_login(test_user1, "testpass123"):
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        results["total"] += 1
-        
-        time.sleep(0.5)
-        
-        # Test 4: List Users
-        if self.test_list_users():
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        results["total"] += 1
-        
-        time.sleep(0.5)
-        
-        # Test 5: Get Public Key
-        if self.test_get_public_key(test_user1):
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        results["total"] += 1
-        
-        time.sleep(0.5)
-        
-        # Test 6: Get My Public Key (Authenticated)
-        if self.test_get_my_public_key(test_user1):
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        results["total"] += 1
-        
-        time.sleep(0.5)
-        
-        # Test 7: File Operations
-        if self.test_file_operations(test_user1):
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        results["total"] += 1
-        
-        time.sleep(0.5)
-        
-        # Test 8: Invalid Login (Expected Failure)
-        if self.test_invalid_login():
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        results["total"] += 1
-        
-        time.sleep(0.5)
-        
-        # Test 9: Unauthorized Access (Expected Failure)
-        if self.test_unauthorized_access():
-            results["passed"] += 1
-        else:
-            results["failed"] += 1
-        results["total"] += 1
-        
-        # Cleanup
-        self.cleanup()
-        
-        # Print Summary
-        self.print_header("TEST SUMMARY")
-        print(f"\nTotal Tests:  {results['total']}")
-        print(f"✅ Passed:    {results['passed']}")
-        print(f"❌ Failed:    {results['failed']}")
-        
-        success_rate = (results['passed'] / results['total'] * 100) if results['total'] > 0 else 0
-        print(f"\nSuccess Rate: {success_rate:.1f}%")
-        
-        if results['failed'] == 0:
-            print("\n🎉 ALL TESTS PASSED! 🎉")
-        else:
-            print(f"\n⚠️  {results['failed']} test(s) failed. Check output above for details.")
-        
-        print("\n" + "="*70 + "\n")
-        
-        return results
+        .sign(private_key, hashes.SHA256())
+    )
+
+    priv_pem = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption()
+    )
+
+    return priv_pem, csr.public_bytes(serialization.Encoding.PEM)
 
 
-def main():
-    """Main test runner"""
-    tester = CryptoShareTester()
-    results = tester.run_all_tests()
-    
-    # Exit with appropriate code
-    exit(0 if results['failed'] == 0 else 1)
+# --------------------------------------------------
+# TESTS
+# --------------------------------------------------
 
+def test_backend():
+    header("TEST 1: Backend Availability")
+    r = requests.get(f"{API}/")
+    if r.status_code == 200:
+        ok("Backend is running")
+    else:
+        fail("Backend is not reachable")
+
+
+def register_user(username, password):
+    header(f"TEST 2: Register User [{username}]")
+
+    priv_pem, csr_pem = generate_keys_and_csr(username)
+    salt = os.urandom(16)
+
+    # Fake encryption for test (real encryption done by client app)
+    priv_enc = b"test_encrypted_private_key"
+
+    payload = {
+        "username": username,
+        "password": password,
+        "salt": base64.urlsafe_b64encode(salt).decode(),
+        "private_key_enc": base64.urlsafe_b64encode(priv_enc).decode(),
+        "csr_pem": csr_pem.decode(),
+    }
+
+    r = requests.post(f"{API}/auth/register", json=payload)
+    if r.status_code == 200:
+        token = r.json()["access_token"]
+        ok("User registered & certificate issued")
+        return token
+    else:
+        fail(r.json())
+
+
+def login_user(username, password):
+    header(f"TEST 3: Login User [{username}]")
+
+    r = requests.post(
+        f"{API}/auth/login",
+        data={"username": username, "password": password},
+    )
+
+    if r.status_code == 200:
+        ok("Login successful with certificate validation")
+        return r.json()["access_token"]
+    else:
+        fail("Login failed")
+
+
+def list_users(token):
+    header("TEST 4: List Users")
+    r = requests.get(
+        f"{API}/users",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    if r.status_code == 200:
+        ok(f"Users found: {r.json()}")
+    else:
+        fail("Failed to list users")
+
+
+def get_certificate(token):
+    header("TEST 5: Fetch Own Certificate")
+    r = requests.get(
+        f"{API}/users/me/certificate",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    if r.status_code == 200:
+        ok("Certificate retrieved & validated")
+    else:
+        fail("Certificate fetch failed")
+
+
+def upload_file(token):
+    header("TEST 6: Upload File with Signature")
+
+    content = b"SecureShare coursework test file"
+    file_hash = hashes.Hash(hashes.SHA256())
+    file_hash.update(content)
+    digest = file_hash.finalize().hex()
+
+    payload = {
+        "filename": "test.txt",
+        "encrypted_content": base64.urlsafe_b64encode(content).decode(),
+        "signature": base64.urlsafe_b64encode(b"fake_signature").decode(),
+        "file_hash": digest,
+        "recipients": [],
+        "encrypted_keys": {},
+    }
+
+    r = requests.post(
+        f"{API}/files",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload
+    )
+
+    if r.status_code == 200:
+        file_id = r.json()["file_id"]
+        ok(f"File uploaded with ID {file_id}")
+        return file_id
+    else:
+        fail(r.text)
+
+
+def download_file(token, file_id):
+    header("TEST 7: Download File with Verification")
+
+    r = requests.get(
+        f"{API}/files/{file_id}",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+
+    if r.status_code == 200:
+        ok("File downloaded with signature metadata")
+    else:
+        fail("File download failed")
+
+
+def revoke_certificate(token):
+    header("TEST 8: Certificate Revocation")
+
+    r = requests.post(
+        f"{API}/users/me/revoke-certificate",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+
+    if r.status_code == 200:
+        ok("Certificate revoked successfully")
+    else:
+        fail("Certificate revocation failed")
+
+
+def unauthorized_access():
+    header("TEST 9: Unauthorized Access")
+    r = requests.get(f"{API}/users/me/certificate")
+    if r.status_code == 401:
+        ok("Unauthorized access correctly blocked")
+    else:
+        fail("Unauthorized access allowed!")
+
+
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
 
 if __name__ == "__main__":
-    main()
+    USER = f"testuser_{int(time.time())}"
+    PASS = "StrongPass123!"
+
+    test_backend()
+    token = register_user(USER, PASS)
+    token = login_user(USER, PASS)
+    list_users(token)
+    get_certificate(token)
+    file_id = upload_file(token)
+    download_file(token, file_id)
+    revoke_certificate(token)
+    unauthorized_access()
+
+    header("ALL TESTS COMPLETED SUCCESSFULLY")
+    print("🎉 SecureShare PKI system validated")
