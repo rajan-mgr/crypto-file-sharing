@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Body
+from fastapi import FastAPI, Depends, HTTPException, Body
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import List, Dict
@@ -11,122 +11,215 @@ from database import engine, get_db, Base
 import crud
 import schemas
 import auth
+import pki
 
-print("Creating tables if not exist...")
+# -------------------------------------------------
+# Database init
+# -------------------------------------------------
 Base.metadata.create_all(bind=engine)
-print("Database ready.")
 
-app = FastAPI(title="Secure Share Backend")
-
+app = FastAPI(title="SecureShare Backend - Proper PKI Implementation")
 
 @app.get("/")
 def root():
-    return {"message": "Secure Share Backend is running"}
+    return {
+        "message": "SecureShare Backend with PKI is running",
+        "features": [
+            "Certificate-based authentication",
+            "Digital signatures with RSA",
+            "Certificate validation",
+            "Certificate revocation (CRL)",
+            "Hybrid encryption (RSA + AES)"
+        ]
+    }
 
-
-# ────────────────────────────────────────────────
-#   Authentication
-# ────────────────────────────────────────────────
+# =================================================
+# AUTH WITH PKI
+# =================================================
 
 @app.post("/auth/register", response_model=schemas.Token)
 def register(user: schemas.UserRegister, db: Session = Depends(get_db)):
+    """Register new user and issue certificate from CA"""
+    
+    if crud.get_user(db, user.username):
+        raise HTTPException(status_code=400, detail="Username already registered")
+
+    # Decode Base64 fields
+    salt_b = base64.urlsafe_b64decode(user.salt + "==")
+    priv_enc_b = base64.urlsafe_b64decode(user.private_key_enc + "==")
+
+    hashed = auth.get_password_hash(user.password)
+
     try:
-        if crud.get_user(db, user.username):
-            raise HTTPException(status_code=400, detail="Username already registered")
-
-        salt_b = base64.urlsafe_b64decode(user.salt + '==')
-        priv_enc_b = base64.urlsafe_b64decode(user.private_key_enc + '==')
-
-        hashed = auth.get_password_hash(user.password)
-
-        new_user = models.User(
-            username=user.username,
-            password_hash=hashed,
-            salt=salt_b,
-            private_key_enc=priv_enc_b,
-            public_key_pem=user.public_key_pem
+        # Issue certificate from CA using the CSR
+        cert_pem, cert_serial, cert_not_after = pki.issue_certificate(
+            user.csr_pem.encode(),
+            user.username,
+            validity_days=365
         )
-
-        db.add(new_user)
-        db.commit()
-        db.refresh(new_user)
-
-        token = auth.create_access_token(
-            data={"sub": new_user.username},
-            expires_delta=timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
-        )
-
-        return {"access_token": token, "token_type": "bearer"}
-
+        
+        print(f"✅ Certificate issued for {user.username}")
+        print(f"   Serial: {cert_serial}")
+        
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Certificate issuance failed: {str(e)}"
+        )
+
+    # Create user with certificate
+    new_user = models.User(
+        username=user.username,
+        password_hash=hashed,
+        salt=salt_b,
+        private_key_enc=priv_enc_b,
+        certificate_pem=cert_pem,  # Store signed certificate
+        cert_serial=cert_serial,
+        cert_not_after=cert_not_after,
+    )
+
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    token = auth.create_access_token(
+        data={"sub": new_user.username},
+        expires_delta=timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+
+    return {"access_token": token, "token_type": "bearer"}
 
 
 @app.post("/auth/login", response_model=schemas.Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    """Login with certificate validation"""
+    
     user = crud.get_user(db, form_data.username)
     if not user or not auth.verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
 
+    # Validate user's certificate
+    if user.certificate_pem:
+        is_valid, error_msg = pki.validate_certificate(user.certificate_pem, db)
+        if not is_valid:
+            raise HTTPException(
+                status_code=401,
+                detail=f"Certificate validation failed: {error_msg}"
+            )
+
     token = auth.create_access_token(
         data={"sub": user.username},
-        expires_delta=timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta=timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES),
     )
     return {"access_token": token, "token_type": "bearer"}
 
-
-# ────────────────────────────────────────────────
-#   Users
-# ────────────────────────────────────────────────
+# =================================================
+# USERS & CERTIFICATES
+# =================================================
 
 @app.get("/users")
 def get_users(db: Session = Depends(get_db)):
-    """List all usernames (for recipient selection in frontend)"""
-    return [row[0] for row in db.query(models.User.username).all()]
+    """List usernames for file sharing"""
+    return [u[0] for u in db.query(models.User.username).all()]
 
 
 @app.get("/users/me/private")
 def get_my_private_info(
     current_user: str = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
+    """Return encrypted private key + salt"""
     user = crud.get_user(db, current_user)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
     return {
-        "salt": base64.urlsafe_b64encode(user.salt).decode('ascii'),
-        "private_key_enc": base64.urlsafe_b64encode(user.private_key_enc).decode('ascii')
+        "salt": base64.urlsafe_b64encode(user.salt).decode(),
+        "private_key_enc": base64.urlsafe_b64encode(user.private_key_enc).decode(),
     }
 
 
-@app.get("/users/me/public-key")
-def get_my_public_key(
+@app.get("/users/me/certificate")
+def get_my_certificate(
     current_user: str = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """Get current user's public key for certificate display"""
-    print(f"DEBUG: Looking for user: '{current_user}' (type: {type(current_user)})")
+    """Return user's certificate and details"""
     user = crud.get_user(db, current_user)
-    print(f"DEBUG: User found: {user is not None}")
-    if user:
-        print(f"DEBUG: User object: username={user.username}")
     if not user:
-        raise HTTPException(status_code=404, detail=f"User not found: {current_user}")
-    return {"public_key_pem": user.public_key_pem}
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not user.certificate_pem:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    
+    # Get certificate info
+    cert_info = pki.get_cert_info(user.certificate_pem)
+    
+    # Check if revoked
+    is_revoked = db.query(models.RevokedCert).filter(
+        models.RevokedCert.cert_serial == user.cert_serial
+    ).first() is not None
+    
+    return {
+        "certificate_pem": user.certificate_pem,
+        "serial": user.cert_serial,
+        "not_after": user.cert_not_after.isoformat() if user.cert_not_after else None,
+        "is_revoked": is_revoked,
+        "details": cert_info
+    }
 
 
-@app.get("/users/{username}/public-key")
-def get_public_key(username: str, db: Session = Depends(get_db)):
+@app.get("/users/{username}/certificate")
+def get_user_certificate(
+    username: str,
+    current_user: str = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get any user's certificate (for encryption and signature verification)"""
     user = crud.get_user(db, username)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return {"public_key_pem": user.public_key_pem}
+    
+    if not user.certificate_pem:
+        raise HTTPException(status_code=404, detail="Certificate not found for this user")
+    
+    # Validate certificate before returning
+    is_valid, error_msg = pki.validate_certificate(user.certificate_pem, db)
+    if not is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Certificate is invalid: {error_msg}"
+        )
+    
+    # Extract public key from certificate
+    public_key_pem = pki.extract_public_key_from_cert(user.certificate_pem)
+    
+    return {
+        "username": username,
+        "certificate_pem": user.certificate_pem,
+        "public_key_pem": public_key_pem.decode(),
+        "serial": user.cert_serial,
+    }
 
 
-# ────────────────────────────────────────────────
-#   Files - Upload / Share
-# ────────────────────────────────────────────────
+@app.post("/users/me/revoke-certificate")
+def revoke_my_certificate(
+    current_user: str = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Revoke user's own certificate"""
+    user = crud.get_user(db, current_user)
+    if not user or not user.cert_serial:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    
+    if pki.revoke_certificate(user.cert_serial, db):
+        return {"status": "certificate revoked", "serial": user.cert_serial}
+    else:
+        raise HTTPException(status_code=500, detail="Revocation failed")
+
+# =================================================
+# FILE UPLOAD WITH DIGITAL SIGNATURES
+# =================================================
 
 @app.post("/files")
 def upload_file(
@@ -137,144 +230,222 @@ def upload_file(
     recipients: List[str] = Body(...),
     encrypted_keys: Dict[str, str] = Body(...),
     current_user: str = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    try:
-        file_id = str(uuid4())
-
-        enc_content_b = base64.urlsafe_b64decode(encrypted_content + '==')
-        sig_b = base64.urlsafe_b64decode(signature + '==')
-
-        db_file = models.SharedFile(
-            file_id=file_id,
-            filename=filename,
-            owner=current_user,
-            file_data=enc_content_b,
-            signature=sig_b,
-            file_hash=file_hash
-        )
-        db.add(db_file)
-        db.commit()
-        db.refresh(db_file)
-
-        # Store encrypted symmetric key for each recipient (including owner)
-        for recipient, key_b64 in encrypted_keys.items():
-            key_b = base64.urlsafe_b64decode(key_b64 + '==')
-            db_perm = models.FilePermission(
-                file_id=file_id,
-                recipient=recipient,
-                encrypted_sym_key=key_b
+    """Upload and share file with digital signature verification"""
+    
+    # Get user object
+    user = crud.get_user(db, current_user)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Validate user's certificate
+    if user.certificate_pem:
+        is_valid, error_msg = pki.validate_certificate(user.certificate_pem, db)
+        if not is_valid:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot upload file: Certificate invalid ({error_msg})"
             )
-            db.add(db_perm)
+    
+    file_id = str(uuid4())
 
-        db.commit()
-        return {"status": "success", "file_id": file_id}
+    enc_content = base64.urlsafe_b64decode(encrypted_content + "==")
+    sig = base64.urlsafe_b64decode(signature + "==")
 
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+    db_file = models.SharedFile(
+        file_id=file_id,
+        owner_id=user.id,
+        owner_username=current_user,
+        filename=filename,
+        file_data=enc_content,
+        signature=sig,  # RSA signature using owner's private key
+        file_hash=file_hash,
+    )
+    db.add(db_file)
+    db.commit()
+    db.refresh(db_file)
 
+    # Create permissions for ALL users in encrypted_keys (including owner)
+    permissions_created = 0
+    for recipient, key_b64 in encrypted_keys.items():
+        key = base64.urlsafe_b64decode(key_b64 + "==")
+        db_perm = models.FilePermission(
+            file_id=file_id,
+            recipient=recipient,
+            encrypted_sym_key=key,
+        )
+        db.add(db_perm)
+        permissions_created += 1
+    
+    db.commit()
+    
+    print(f"✅ File {file_id} uploaded with {permissions_created} permissions")
+    print(f"   Owner: {current_user}")
+    print(f"   Signature: {len(sig)} bytes")
+    
+    return {
+        "status": "success",
+        "file_id": file_id,
+        "permissions": permissions_created,
+        "signed": True
+    }
 
-# ────────────────────────────────────────────────
-#   Files - List
-# ────────────────────────────────────────────────
+# =================================================
+# LIST FILES
+# =================================================
 
 @app.get("/files")
 def list_files(
     current_user: str = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
+    """List files with signature verification status"""
     files = crud.get_user_files(db, current_user)
-    return [
-        {
+    
+    result = []
+    for f in files:
+        # Get owner's certificate for signature verification
+        owner = crud.get_user(db, f.owner_username)
+        signature_valid = False
+        
+        if owner and owner.certificate_pem:
+            # Check if owner's certificate is valid
+            cert_valid, _ = pki.validate_certificate(owner.certificate_pem, db)
+            signature_valid = cert_valid
+        
+        result.append({
             "file_id": f.file_id,
             "filename": f.filename,
-            "owner": f.owner,
-            "signature": base64.urlsafe_b64encode(f.signature).decode('ascii'),
+            "owner": f.owner_username,
+            "signature": base64.urlsafe_b64encode(f.signature).decode(),
+            "signature_valid": signature_valid,
             "file_hash": f.file_hash,
-            "timestamp": f.timestamp.isoformat() if f.timestamp else None
-        }
-        for f in files
-    ]
+            "timestamp": f.timestamp.isoformat() if f.timestamp else None,
+        })
+    
+    return result
 
-
-# ────────────────────────────────────────────────
-#   Files - Download
-# ────────────────────────────────────────────────
+# =================================================
+# DOWNLOAD FILE WITH SIGNATURE VERIFICATION
+# =================================================
 
 @app.get("/files/{file_id}")
 def get_file(
     file_id: str,
     current_user: str = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
+    """Download file with signature verification"""
+    
     file_row, perm_row = crud.get_file_with_permission(db, file_id, current_user)
-    if not file_row or (not perm_row and file_row.owner != current_user):
-        raise HTTPException(status_code=404, detail="File not found or access denied")
+    if not file_row:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Check access: must be owner OR have permission
+    if file_row.owner_username != current_user and not perm_row:
+        raise HTTPException(status_code=403, detail="Access denied")
 
+    # Get owner's certificate for signature verification
+    owner = crud.get_user(db, file_row.owner_username)
+    owner_cert_valid = False
+    owner_cert_pem = None
+    
+    if owner and owner.certificate_pem:
+        is_valid, error_msg = pki.validate_certificate(owner.certificate_pem, db)
+        owner_cert_valid = is_valid
+        if is_valid:
+            owner_cert_pem = owner.certificate_pem
+
+    # Return the encrypted symmetric key for the current user
+    encrypted_sym_key = None
+    if perm_row:
+        encrypted_sym_key = base64.urlsafe_b64encode(perm_row.encrypted_sym_key).decode()
+    
     return {
-        "file_data": base64.urlsafe_b64encode(file_row.file_data).decode('ascii'),
-        "signature": base64.urlsafe_b64encode(file_row.signature).decode('ascii'),
-        "encrypted_sym_key": base64.urlsafe_b64encode(perm_row.encrypted_sym_key).decode('ascii')
-            if perm_row else None,
+        "file_data": base64.urlsafe_b64encode(file_row.file_data).decode(),
+        "signature": base64.urlsafe_b64encode(file_row.signature).decode(),
+        "encrypted_sym_key": encrypted_sym_key,
         "file_hash": file_row.file_hash,
-        "owner": file_row.owner,
-        "timestamp": file_row.timestamp.isoformat() if file_row.timestamp else None
+        "owner": file_row.owner_username,
+        "owner_certificate": owner_cert_pem,
+        "signature_valid": owner_cert_valid,
+        "timestamp": file_row.timestamp.isoformat() if file_row.timestamp else None,
     }
 
-
-# ────────────────────────────────────────────────
-#   Files - Delete (only owner)
-# ────────────────────────────────────────────────
+# =================================================
+# DELETE FILE
+# =================================================
 
 @app.delete("/files/{file_id}")
 def delete_file(
     file_id: str,
     current_user: str = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     file_row = crud.get_file_by_id(db, file_id)
     if not file_row:
         raise HTTPException(status_code=404, detail="File not found")
 
-    if file_row.owner != current_user:
-        raise HTTPException(status_code=403, detail="Only the file owner can delete this file")
+    if file_row.owner_username != current_user:
+        raise HTTPException(status_code=403, detail="Only owner can delete")
 
-    # Delete all associated permissions first
-    db.query(models.FilePermission).filter(models.FilePermission.file_id == file_id).delete()
-    # Then delete the file record
+    # Delete all permissions first
+    db.query(models.FilePermission).filter(
+        models.FilePermission.file_id == file_id
+    ).delete()
+    
     db.delete(file_row)
     db.commit()
 
-    return {"status": "file deleted", "file_id": file_id}
+    return {"status": "deleted"}
 
-
-# ────────────────────────────────────────────────
-#   Files - Revoke access for one user (only owner)
-# ────────────────────────────────────────────────
+# =================================================
+# REVOKE ACCESS
+# =================================================
 
 @app.delete("/files/{file_id}/access/{target_username}")
 def revoke_access(
     file_id: str,
     target_username: str,
     current_user: str = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     file_row = crud.get_file_by_id(db, file_id)
     if not file_row:
         raise HTTPException(status_code=404, detail="File not found")
-
-    if file_row.owner != current_user:
-        raise HTTPException(status_code=403, detail="Only the file owner can revoke access")
-
-    if target_username == current_user:
-        raise HTTPException(status_code=400, detail="Cannot revoke your own access — delete the file instead")
+    
+    if file_row.owner_username != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized")
 
     perm = crud.get_file_permission(db, file_id, target_username)
     if not perm:
-        raise HTTPException(status_code=404, detail=f"No access found for user {target_username}")
+        raise HTTPException(status_code=404, detail="Access not found")
 
     db.delete(perm)
     db.commit()
+    return {"status": "access revoked"}
 
-    return {"status": "access revoked", "user": target_username, "file_id": file_id}
+
+# =================================================
+# CA CERTIFICATE (PUBLIC)
+# =================================================
+
+@app.get("/ca/certificate")
+def get_ca_certificate():
+    """Get CA certificate for client verification"""
+    try:
+        _, ca_cert = pki.load_ca()
+        from cryptography.hazmat.primitives import serialization
+        
+        ca_cert_pem = ca_cert.public_bytes(serialization.Encoding.PEM).decode()
+        
+        return {
+            "certificate_pem": ca_cert_pem,
+            "subject": ca_cert.subject.rfc4514_string(),
+            "serial": format(ca_cert.serial_number, 'x'),
+            "not_before": ca_cert.not_valid_before_utc.isoformat(),
+            "not_after": ca_cert.not_valid_after_utc.isoformat(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CA certificate not available: {e}")

@@ -1,41 +1,31 @@
 # backend/crud.py
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
-import models
-import schemas
 from typing import Tuple, Optional, List
 
+import models
+
+
+# =================================================
+# USERS
+# =================================================
 
 def get_user(db: Session, username: str) -> Optional[models.User]:
-    """Get user by username - with debug output"""
-    print(f"CRUD DEBUG: Searching for username: '{username}'")
-    user = db.query(models.User).filter(models.User.username == username).first()
-    print(f"CRUD DEBUG: User found: {user is not None}")
-    if user:
-        print(f"CRUD DEBUG: Found user: {user.username}, has public_key: {bool(user.public_key_pem)}")
-    return user
+    """Get user by username"""
+    return db.query(models.User).filter(models.User.username == username).first()
 
 
-def create_user(db: Session, username: str, password_hash: str, salt: bytes, priv_enc: bytes, pub_pem: str):
-    user = models.User(
-        username=username,
-        password_hash=password_hash,
-        salt=salt,
-        private_key_enc=priv_enc,
-        public_key_pem=pub_pem
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user
-
+# =================================================
+# FILES
+# =================================================
 
 def get_user_files(db: Session, username: str) -> List[models.SharedFile]:
+    """Return all files owned by or shared with the user"""
     return (
         db.query(models.SharedFile)
         .filter(
             or_(
-                models.SharedFile.owner == username,
+                models.SharedFile.owner_username == username,
                 models.SharedFile.file_id.in_(
                     db.query(models.FilePermission.file_id)
                     .filter(models.FilePermission.recipient == username)
@@ -52,12 +42,13 @@ def get_file_with_permission(
     file_id: str,
     username: str
 ) -> Tuple[Optional[models.SharedFile], Optional[models.FilePermission]]:
+    """Return file and permission row for a specific user"""
     file = (
         db.query(models.SharedFile)
         .filter(models.SharedFile.file_id == file_id)
         .filter(
             or_(
-                models.SharedFile.owner == username,
+                models.SharedFile.owner_username == username,
                 models.SharedFile.file_id.in_(
                     db.query(models.FilePermission.file_id)
                     .filter(models.FilePermission.recipient == username)
@@ -83,11 +74,20 @@ def get_file_with_permission(
 
 
 def get_file_by_id(db: Session, file_id: str) -> Optional[models.SharedFile]:
-    """Used by owner-only operations (delete, revoke)"""
-    return db.query(models.SharedFile).filter(models.SharedFile.file_id == file_id).first()
+    """Used for owner-only operations (delete, revoke access)"""
+    return (
+        db.query(models.SharedFile)
+        .filter(models.SharedFile.file_id == file_id)
+        .first()
+    )
 
 
-def get_file_permission(db: Session, file_id: str, recipient: str) -> Optional[models.FilePermission]:
+def get_file_permission(
+    db: Session,
+    file_id: str,
+    recipient: str
+) -> Optional[models.FilePermission]:
+    """Return permission row for a specific file/user"""
     return (
         db.query(models.FilePermission)
         .filter(
