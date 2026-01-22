@@ -1,12 +1,20 @@
-name: SecureShare CI (PKI + Tests)
+name: SecureShare CI + Release (PKI Enabled)
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: cryptoshare-backend
+
+# =========================================================
+# 1️⃣ TEST BACKEND WITH PKI
+# =========================================================
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
@@ -28,65 +36,166 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://cow:cow123@localhost:5432/cryptoshare
-      SECRET_KEY: ci-test-secret-key-not-for-production
+      SECRET_KEY: ci-secret-key-not-for-production
       CA_KEY_PATH: ./pki/ca.key
       CA_CERT_PATH: ./pki/ca.crt
 
     steps:
-      # -------------------------------------------------
-      # Checkout
-      # -------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -------------------------------------------------
-      # Python setup
-      # -------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # -------------------------------------------------
-      # Install dependencies
-      # -------------------------------------------------
       - name: Install backend dependencies
         run: |
           pip install --upgrade pip
           pip install -r backend/requirements.txt
-          pip install bandit pylint requests cryptography
+          pip install requests cryptography bandit pylint
 
-      # -------------------------------------------------
-      # Static analysis (non-blocking)
-      # -------------------------------------------------
       - name: Run Bandit (Security Scan)
         run: bandit -r backend -ll || true
 
       - name: Run Pylint (Code Quality)
         run: pylint backend/*.py || true
 
-      # -------------------------------------------------
-      # PKI setup (CRITICAL)
-      # -------------------------------------------------
-      - name: Create PKI (Certificate Authority)
+      - name: Setup Certificate Authority (PKI)
         run: |
           cd backend
           python setup_ca.py
           ls -lh pki/
 
-      # -------------------------------------------------
-      # Start backend
-      # -------------------------------------------------
-      - name: Start SecureShare backend
+      - name: Start Backend
         run: |
           cd backend
           uvicorn main:app --host 127.0.0.1 --port 8000 &
           sleep 10
           curl http://127.0.0.1:8000/ || exit 1
 
-      # -------------------------------------------------
-      # Run PKI-aware tests
-      # -------------------------------------------------
-      - name: Run SecureShare test suite
+      - name: Run PKI Test Suite
+        run: python test_app.py
+
+# =========================================================
+# 2️⃣ BUILD BACKEND DOCKER IMAGE
+# =========================================================
+  build-backend:
+    needs: backend-tests
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Build & Push Backend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/cryptoshare-backend:latest
+
+# =========================================================
+# 3️⃣ BUILD GUI EXECUTABLES (WIN + LINUX)
+# =========================================================
+  build-gui:
+    needs: backend-tests
+    runs-on: ${{ matrix.os }}
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: SecureShare-Windows.exe
+          - os: ubuntu-latest
+            artifact: SecureShare-Linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install GUI dependencies
         run: |
-          python test_app.py
+          pip install -r gui/requirements.txt
+          pip install pyinstaller
+
+      - name: Build GUI Executable
+        shell: bash
+        run: |
+          cd gui
+          pyinstaller --onefile \
+            --name SecureShare \
+            --hidden-import=secure_share \
+            --hidden-import=cryptography \
+            --hidden-import=cryptography.fernet \
+            --hidden-import=cryptography.hazmat.primitives \
+            app.py
+
+      - name: Upload GUI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: gui/dist/*
+
+# =========================================================
+# 4️⃣ CREATE RELEASE PACKAGE
+# =========================================================
+  create-release:
+    needs: [build-backend, build-gui]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Create backend + DB deployment package
+        run: |
+          mkdir -p deploy-package
+          cp docker-compose.yml deploy-package/
+          
+          cat > deploy-package/.env.example << 'EOF'
+          POSTGRES_USER=cow
+          POSTGRES_PASSWORD=CHANGE_ME
+          POSTGRES_DB=cryptoshare
+          SECRET_KEY=CHANGE_TO_RANDOM_50_CHARS
+          DATABASE_URL=postgresql://cow:CHANGE_ME@db:5432/cryptoshare
+          EOF
+
+          tar -czf cryptoshare-backend-${{ github.ref_name }}.tar.gz deploy-package/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: SecureShare ${{ github.ref_name }}
+          files: |
+            cryptoshare-backend-${{ github.ref_name }}.tar.gz
+            release-assets/**
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
