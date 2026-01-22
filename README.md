@@ -1,16 +1,1 @@
-<<<<<<< HEAD
-git clone https://github.com/rajan-mgr/crypto-file-sharing.git
-
-
-run backend:
-
-
-run frontend:
-  python3 gui/app.py
-=======
-To run this from docker:
-since it a gui. Use the following commands:
-1.xhost +local:docker
-
-2.docker run -it --rm --env-file .env -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix ghcr.io/<image name or id>
->>>>>>> b04f3c2 (Adding important features)
+cryto
