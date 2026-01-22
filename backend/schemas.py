@@ -1,6 +1,7 @@
 # backend/schemas.py
+
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 
 # ============================
@@ -32,6 +33,25 @@ class UserLogin(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+
+# ============================
+# PUBLIC KEY / CERTIFICATE
+# ============================
+
+class UserPublicKeyOut(BaseModel):
+    """
+    Returned when fetching another user's key/certificate.
+    This schema is intentionally backward-compatible.
+    """
+
+    username: str
+
+    # NEW (preferred)
+    certificate_pem: Optional[str] = None
+
+    # BACKWARD COMPATIBILITY (GUI expects this)
+    public_key_pem: Optional[str] = None
 
 
 # ============================
