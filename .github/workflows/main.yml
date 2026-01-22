@@ -222,7 +222,7 @@ jobs:
           path: gui-source/*
 
 # =========================================================
-# 5️⃣ CREATE RELEASE
+# 5️⃣ CREATE RELEASE (FIXED – NO 422 ERROR)
 # =========================================================
   create-release:
     needs: [build-backend, build-frontend-executables, package-gui-source]
@@ -238,17 +238,21 @@ jobs:
         with:
           path: release-assets
 
-      - name: Create deployment package
+      - name: Create backend deployment package
         run: |
           mkdir deploy
           cp docker-compose.yml deploy/
           tar -czf cryptoshare-deploy-${{ github.ref_name }}.tar.gz deploy
 
-      - uses: softprops/action-gh-release@v1
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
         with:
           name: SecureShare ${{ github.ref_name }}
           files: |
             cryptoshare-deploy-${{ github.ref_name }}.tar.gz
-            release-assets/**
+            release-assets/SecureShare-Linux/**
+            release-assets/SecureShare-Windows/**
+            release-assets/GUI-Source/*.tar.gz
+            release-assets/GUI-Source/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
