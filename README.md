@@ -184,32 +184,6 @@ Download the appropriate client for your operating system from the [Releases](ht
 3. Share the file link or identifier with intended recipients
 4. Recipients can download and decrypt files using their private keys
 
----
-
-## ⚙ Configuration
-
-### Environment Variables
-
-You can customize the following environment variables in `docker-compose.yml`:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `POSTGRES_USER` | Database username | `cow` |
-| `POSTGRES_PASSWORD` | Database password | `cow123` |
-| `POSTGRES_DB` | Database name | `cryptoshare` |
-| `SECRET_KEY` | JWT signing key | `change_this_to_a_long_random_secret` |
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://cow:cow123@db:5432/cryptoshare` |
-
-**⚠️ Security Warning**: Change `SECRET_KEY` and database credentials in production environments!
-
-### Port Configuration
-
-- Backend API: `8000` (default)
-- PostgreSQL: `5432` (default)
-
-To change ports, modify the `ports` section in `docker-compose.yml`.
-
----
 
 ## 🔧 Troubleshooting
 
