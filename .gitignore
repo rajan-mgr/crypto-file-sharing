@@ -21,3 +21,9 @@ Thumbs.db
 *.pem
 *.key
 *.salt*
+
+pki/
+**/pki/
+*.key
+*.pem
+*.crt
