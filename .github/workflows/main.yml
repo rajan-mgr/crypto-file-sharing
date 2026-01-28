@@ -238,12 +238,6 @@ jobs:
         with:
           path: release-assets
 
-      - name: Create backend deployment package
-        run: |
-          mkdir deploy
-          cp docker-compose.yml deploy/
-          tar -czf cryptoshare-deploy-${{ github.ref_name }}.tar.gz deploy
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
