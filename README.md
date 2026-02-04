@@ -62,6 +62,8 @@ Before installing SecureShare, ensure you have:
 Create a new directory for SecureShare and create a `docker-compose.yml` file:
 
 ```yaml
+version: "3.9"
+
 services:
   db:
     image: postgres:15-alpine
@@ -81,28 +83,32 @@ services:
       retries: 5
 
   backend:
-    image: ghcr.io/rajan-mgr/cryptoshare-backend:v1.0.26
+    image: ghcr.io/rajan-mgr/cryptoshare-backend:v1.0.27
     container_name: cryptoshare-backend
     depends_on:
       db:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://cow:cow123@db:5432/cryptoshare
-      SECRET_KEY: change_this_to_a_long_random_secret
+      SECRET_KEY: change_this_to_a_long_random_secret_value_here
       CA_KEY_PATH: /app/pki/ca.key
       CA_CERT_PATH: /app/pki/ca.crt
     ports:
       - "8000:8000"
+    volumes:
+      - ca_data:/app/pki   
     restart: unless-stopped
 
 volumes:
   db_data:
+  ca_data:
+
 ```
 
 #### Step 2: Pull Backend Image
 
 ```bash
-docker pull ghcr.io/rajan-mgr/cryptoshare-backend:v1.0.26
+docker pull ghcr.io/rajan-mgr/cryptoshare-backend:v1.0.27
 ```
 
 #### Step 3: Initialize PKI Certificate Authority
